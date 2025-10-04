@@ -2,6 +2,9 @@
 #
 # Get latest from https://github.com/github/gitignore/blob/main/Unity.gitignore
 #
+.DS_Store
+
+
 .utmp/
 /[Ll]ibrary/
 /[Tt]emp/
@@ -97,3 +100,4 @@ InitTestScene*.unity*
 
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+2hack_BurstDebugInformation_DoNotShip
