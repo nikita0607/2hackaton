@@ -10,18 +10,93 @@ import RealityKit
 import Observation
 
 struct ContentView: View {
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @State private var navigationViewModel = NavigationViewModel()
 
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
-                ToggleImmersiveSpaceButton()
+                ScenePickerView(appModel: appModel)
+                ScenePreview(selection: appModel.selectedScene)
 
                 Divider()
 
                 NavigationDemoView(viewModel: navigationViewModel)
             }
             .padding(24)
+        }
+        .onChange(of: appModel.selectedScene) { _, newSelection in
+            Task { await updateImmersiveSpace(for: newSelection) }
+        }
+    }
+
+    @MainActor
+    private func updateImmersiveSpace(for selection: AppModel.SceneSelection) async {
+        switch selection {
+        case .arrow:
+            guard appModel.immersiveSpaceState == .open else { return }
+            appModel.immersiveSpaceState = .inTransition
+            await dismissImmersiveSpace()
+
+        case .cube:
+            guard appModel.immersiveSpaceState == .closed else { return }
+            appModel.immersiveSpaceState = .inTransition
+            let result = await openImmersiveSpace(id: appModel.immersiveSpaceID)
+            switch result {
+            case .opened:
+                break
+            case .userCancelled, .error:
+                appModel.immersiveSpaceState = .closed
+                appModel.selectedScene = .arrow
+            @unknown default:
+                appModel.immersiveSpaceState = .closed
+                appModel.selectedScene = .arrow
+            }
+        }
+    }
+}
+
+private struct ScenePickerView: View {
+    @Bindable var appModel: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Выбор сцены")
+                .font(.headline)
+
+            Picker("Сцена", selection: $appModel.selectedScene) {
+                Text("Плоская стрелка").tag(AppModel.SceneSelection.arrow)
+                Text("3D куб").tag(AppModel.SceneSelection.cube)
+            }
+            .pickerStyle(.segmented)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ScenePreview: View {
+    let selection: AppModel.SceneSelection
+
+    var body: some View {
+        switch selection {
+        case .arrow:
+            ArrowView()
+                .frame(maxWidth: .infinity)
+                .frame(height: 240)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+
+        case .cube:
+            VStack(alignment: .leading, spacing: 12) {
+                Image(systemName: "cube")
+                    .font(.largeTitle)
+                Text("Куб отображается в иммерсивной сцене перед вами. Перемещайтесь свободно — объект остаётся закреплённым в пространстве.")
+                    .font(.callout)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
         }
     }
 }

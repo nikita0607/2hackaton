@@ -17,5 +17,12 @@ class AppModel {
         case inTransition
         case open
     }
+
+    enum SceneSelection: String, CaseIterable, Equatable, Hashable {
+        case arrow
+        case cube
+    }
+
     var immersiveSpaceState = ImmersiveSpaceState.closed
+    var selectedScene: SceneSelection = .arrow
 }

@@ -26,14 +26,6 @@ struct _gisApp: App {
         ImmersiveSpace(id: appModel.immersiveSpaceID) {
             ImmersiveView()
                 .environment(appModel)
-                .onAppear {
-                    appModel.immersiveSpaceState = .open
-                    avPlayerViewModel.play()
-                }
-                .onDisappear {
-                    appModel.immersiveSpaceState = .closed
-                    avPlayerViewModel.reset()
-                }
         }
         .immersionStyle(selection: .constant(.full), in: .full)
     }

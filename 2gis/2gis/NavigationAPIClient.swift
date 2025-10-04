@@ -188,6 +188,7 @@ struct Maneuver: Decodable {
 }
 
 struct SegmentGeometry: Decodable, Identifiable {
+    enum CodingKeys: String, CodingKey { case color, length, selection, style }
     let id = UUID()
     let color: String?
     let length: Double?
