@@ -18,7 +18,7 @@ public struct ManeuverNode: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
-// 👇 НОВОЕ: номинальный тип вместо кортежа
+// Номинальный тип точки вместо неименованного кортежа
 public struct GeoPoint: Codable, Hashable, Sendable {
     public let lon: Double
     public let lat: Double

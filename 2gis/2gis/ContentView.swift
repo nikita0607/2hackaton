@@ -52,7 +52,7 @@ struct ContentView: View {
                     destPoint: $destPoint
                 )
 
-                // Эскиз всего маршрута (по манёврам и полной полилинии)
+                // Эскиз маршрута (манёвры и полная полилиния)
                 RouteOverlayPanel(
                     origin: appModel.routeOriginLonLat,
                     polyline: appModel.routePolyline,
@@ -64,7 +64,7 @@ struct ContentView: View {
 
                 Divider()
 
-                // Каталог по координатам
+                // Каталог объектов по координатам
                 CatalogFlowSection(
                     viewModel: catalogViewModel,
                     lonText: $lonText,
@@ -140,8 +140,8 @@ struct ContentView: View {
                 }
             }
         }
-        // ✅ БЕЗ Equatable: побочные действия при смене маршрута — через .task(id:)
-        // SwiftUI перезапустит этот блок, когда поменяется routeToken (обычно = route.id).
+        // Побочные действия при смене маршрута выполняем через .task(id: routeToken)
+        // SwiftUI переинициализирует этот блок при изменении routeToken (обычно соответствует route.id)
         .task(id: routeToken) {
             guard routeToken != "no-route",
                   routeToken != lastProcessedRouteToken,
@@ -254,7 +254,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - NavigationDemoView (как раньше)
+// MARK: - Navigation Demo
 
 private struct NavigationDemoView: View {
     @Environment(AppModel.self) private var appModel
@@ -412,7 +412,7 @@ private struct CatalogFlowSection: View {
     }
 }
 
-// MARK: - 2D Sketch Panel (Canvas) — полный маршрут + узлы манёвров
+// MARK: - Route Overlay (Canvas)
 
 struct RouteOverlayPanel: View {
     let origin: (lon: Double, lat: Double)?

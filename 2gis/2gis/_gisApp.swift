@@ -13,7 +13,7 @@ struct _gisApp: App {
         }
         .defaultSize(CGSize(width: 900, height: 800))
 
-        // 👇 Новое: группа окон-«билбордов» по значениям узлов
+        // Группа окон с карточками подсказок (билборды) по значениям узлов
         WindowGroup(id: "SignpostWindow", for: ManeuverNode.self) { $node in
             if let node {
                 SignpostWindow(node: node)
@@ -28,4 +28,3 @@ struct _gisApp: App {
         .windowResizability(.contentSize)
     }
 }
-
