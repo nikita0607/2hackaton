@@ -1,1 +1,0 @@
-let client = DGisPlacesClient(config: .init(apiKey: "<YOUR_2GIS_API_KEY>"))
