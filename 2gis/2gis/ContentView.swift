@@ -75,8 +75,8 @@ struct ContentView: View {
         }
         .onAppear {
             locationService.distanceThresholdMeters = 1.0
-            // Включаем мок-геопозицию из GPX и запускаем
-            locationService.enableMockFromBundledGPX(named: "xcode_route_2mps")
+            // Используем реальный GPS (без мок-геопозиции)
+            locationService.mode = .real
             locationService.start()
             navigationViewModel.startContinuousPositionCheck(locationService: locationService)
         }
