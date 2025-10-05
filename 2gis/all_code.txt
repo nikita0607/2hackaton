@@ -1,0 +1,1563 @@
+
+################################################################################
+FILE: AVPlayerView.swift
+SIZE: 481 bytes
+
+################################################################################
+//
+//  AVPlayerView.swift
+//  2gis
+//
+//  Created by Павел on 04.10.2025.
+//
+
+import SwiftUI
+
+struct AVPlayerView: UIViewControllerRepresentable {
+    let viewModel: AVPlayerViewModel
+
+    func makeUIViewController(context: Context) -> some UIViewController {
+        return viewModel.makePlayerViewController()
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewControllerType, context: Context) {
+        // Update the AVPlayerViewController as needed
+    }
+}
+
+################################################################################
+FILE: AVPlayerViewModel.swift
+SIZE: 1557 bytes
+
+################################################################################
+//
+//  AVPlayerViewModel.swift
+//  2gis
+//
+//  Created by Павел on 04.10.2025.
+//
+
+import AVKit
+
+@MainActor
+@Observable
+class AVPlayerViewModel: NSObject {
+    var isPlaying: Bool = false
+    private var avPlayerViewController: AVPlayerViewController?
+    private var avPlayer = AVPlayer()
+    private let videoURL: URL? = {
+        // Return URL for the video to play. For example:
+        // Bundle.main.url(forResource: "MyVideo", withExtension: "mp4")
+        return nil
+    }()
+
+    func makePlayerViewController() -> AVPlayerViewController {
+        let avPlayerViewController = AVPlayerViewController()
+        avPlayerViewController.player = avPlayer
+        avPlayerViewController.delegate = self
+        self.avPlayerViewController = avPlayerViewController
+        return avPlayerViewController
+    }
+
+    func play() {
+        guard !isPlaying, let videoURL else { return }
+        isPlaying = true
+
+        let item = AVPlayerItem(url: videoURL)
+        avPlayer.replaceCurrentItem(with: item)
+        avPlayer.play()
+    }
+
+    func reset() {
+        guard isPlaying else { return }
+        isPlaying = false
+        avPlayer.replaceCurrentItem(with: nil)
+        avPlayerViewController?.delegate = nil
+    }
+}
+
+extension AVPlayerViewModel: AVPlayerViewControllerDelegate {
+    nonisolated func playerViewController(_ playerViewController: AVPlayerViewController, willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
+        Task { @MainActor in
+            reset()
+        }
+    }
+}
+
+################################################################################
+FILE: AppModel.swift
+SIZE: 736 bytes
+
+################################################################################
+//
+//  AppModel.swift
+//  2gis
+//
+//  Created by Павел on 04.10.2025.
+//
+
+import SwiftUI
+
+/// Maintains app-wide state
+@MainActor
+@Observable
+class AppModel {
+    let immersiveSpaceID = "ImmersiveSpace"
+    enum ImmersiveSpaceState { case closed, inTransition, open }
+
+    enum SceneSelection: String, CaseIterable, Equatable, Hashable {
+        case arrow
+        case cube
+    }
+
+    var immersiveSpaceState = ImmersiveSpaceState.closed
+    var selectedScene: SceneSelection = .arrow
+
+    // Дистанция для стрелки (м) с жёстким клэмпом 1...5
+    private(set) var arrowDistance: Float = 1.5
+    func setArrowDistance(_ meters: Float) {
+        arrowDistance = max(1.0, min(5.0, meters))
+    }
+}
+
+################################################################################
+FILE: ArrowView.swift
+SIZE: 1737 bytes
+
+################################################################################
+import SwiftUI
+
+struct ArrowView: View {
+    @State private var pulse = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let size  = min(geo.size.width, geo.size.height)
+            let inset = size * 0.1
+
+            ArrowShape()
+                .fill(LinearGradient(colors: [Color.cyan, Color.blue],
+                                     startPoint: .top, endPoint: .bottom))
+                .shadow(color: Color.cyan.opacity(0.5), radius: 16, y: 8)
+                .overlay {
+                    ArrowShape()
+                        .stroke(Color.white.opacity(0.6), lineWidth: 2)
+                }
+                .scaleEffect(pulse ? 1.05 : 1.0, anchor: .center)
+                .animation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true), value: pulse)
+                .frame(width: size - inset * 2, height: size - inset * 2)
+                .position(x: geo.size.width / 2, y: geo.size.height / 2)
+        }
+        .onAppear { pulse = true }
+    }
+}
+
+private struct ArrowShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let w = rect.width
+        let h = rect.height
+        let headH = h * 0.4
+
+        path.move(to: CGPoint(x: w / 2, y: 0))
+        path.addLine(to: CGPoint(x: w,       y: headH))
+        path.addLine(to: CGPoint(x: w * 0.68,y: headH))
+        path.addLine(to: CGPoint(x: w * 0.68,y: h))
+        path.addLine(to: CGPoint(x: w * 0.32,y: h))
+        path.addLine(to: CGPoint(x: w * 0.32,y: headH))
+        path.addLine(to: CGPoint(x: 0,       y: headH))
+        path.closeSubpath()
+        return path
+    }
+}
+
+#Preview {
+    ArrowView()
+        .frame(width: 640, height: 260)
+        .background(Color.clear)
+        .padding()
+}
+
+################################################################################
+FILE: ArrowWindow.swift
+SIZE: 545 bytes
+
+################################################################################
+import SwiftUI
+
+struct ArrowWindow: View {
+    var body: some View {
+        ArrowView()
+            .padding(16)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .navigationTitle("Стрелка")
+            .toolbar {
+                // опционально — небольшая подсказка
+                ToolbarItem(placement: .status) {
+                    Text("Окно со стрелкой").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+    }
+}
+
+################################################################################
+FILE: CatalogAPIClient.swift
+SIZE: 6177 bytes
+
+################################################################################
+import Foundation
+
+struct CatalogAPIClient {
+    enum APIError: LocalizedError { case invalidURL, http(Int), decoding(Error) }
+
+    struct Configuration: Sendable {
+        let baseV3: URL
+        static let production = Configuration(baseV3: URL(string: "https://catalog.api.2gis.com/3.0")!)
+    }
+
+    private let apiKey: String
+    private let session: URLSession
+    private let config: Configuration
+    private let decoder: JSONDecoder
+
+    init(apiKey: String, session: URLSession = .shared, config: Configuration = .production) {
+        self.apiKey = apiKey
+        self.session = session
+        self.config = config
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        self.decoder = d
+    }
+
+    // MARK: Endpoints
+
+    func geocodeBuilding(lon: Double, lat: Double, radius: Int? = 50) async throws -> GeocodeResponse {
+        var comp = URLComponents(url: config.baseV3.appendingPathComponent("items/geocode"), resolvingAgainstBaseURL: false)!
+        var qi: [URLQueryItem] = [
+            .init(name: "lon", value: String(lon)),
+            .init(name: "lat", value: String(lat)),
+            .init(name: "type", value: "building"),
+            .init(name: "key", value: apiKey)
+        ]
+        if let radius { qi.append(.init(name: "radius", value: String(radius))) }
+        comp.queryItems = qi
+        let req = URLRequest(url: comp.url!)
+        return try await send(req, decode: GeocodeResponse.self)
+    }
+
+    func buildingDetails(id: String, fields: String?) async throws -> BuildingDetailsResponse {
+        var comp = URLComponents(url: config.baseV3.appendingPathComponent("items/byid"), resolvingAgainstBaseURL: false)!
+        var items = [URLQueryItem(name: "id", value: id), URLQueryItem(name: "key", value: apiKey)]
+        if let fields, !fields.isEmpty { items.append(.init(name: "fields", value: fields)) }
+        comp.queryItems = items
+        let req = URLRequest(url: comp.url!)
+        return try await send(req, decode: BuildingDetailsResponse.self)
+    }
+
+    func listIndoorOrganizations(buildingId: String, page: Int = 1, pageSize: Int = 12) async throws -> PlacesSearchResponse {
+        var comp = URLComponents(url: config.baseV3.appendingPathComponent("items"), resolvingAgainstBaseURL: false)!
+        comp.queryItems = [
+            .init(name: "key", value: apiKey),
+            .init(name: "building_id", value: buildingId),
+            .init(name: "search_type", value: "indoor"),
+            .init(name: "page", value: String(page)),
+            .init(name: "page_size", value: String(pageSize))
+        ]
+        let req = URLRequest(url: comp.url!)
+        return try await send(req, decode: PlacesSearchResponse.self)
+    }
+
+    func listServicing(buildingId: String, group: String = "default", fields: String? = nil, page: Int = 1, pageSize: Int = 12) async throws -> PlacesSearchResponse {
+        var comp = URLComponents(url: URL(string: "https://catalog.api.2gis.com")!.appendingPathComponent("3.0/items/byservicing"), resolvingAgainstBaseURL: false)!
+        var items = [
+            URLQueryItem(name: "key", value: apiKey),
+            URLQueryItem(name: "building_id", value: buildingId),
+            URLQueryItem(name: "servicing_group", value: group),
+            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "page_size", value: String(pageSize))
+        ]
+        if let fields, !fields.isEmpty { items.append(.init(name: "fields", value: fields)) }
+        comp.queryItems = items
+        let req = URLRequest(url: comp.url!)
+        return try await send(req, decode: PlacesSearchResponse.self)
+    }
+
+    // MARK: Sending
+    private func send<T: Decodable>(_ req: URLRequest, decode: T.Type) async throws -> T {
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw APIError.invalidURL }
+        guard 200..<300 ~= http.statusCode else { throw APIError.http(http.statusCode) }
+        do { return try decoder.decode(T.self, from: data) } catch { throw APIError.decoding(error) }
+    }
+}
+
+// MARK: Models
+
+struct GeocodeResponse: Decodable {
+    struct Result: Decodable { let items: [GeocodeItem]?; let total: Int? }
+    let meta: Meta?
+    let result: Result?
+}
+
+struct GeocodeItem: Decodable, Identifiable { let id: String; let name: String; let fullName: String?; let type: String }
+
+struct BuildingDetailsResponse: Decodable {
+    struct Result: Decodable { let items: [BuildingDetails]?; let total: Int? }
+    let meta: Meta?
+    let result: Result?
+}
+
+struct BuildingDetails: Decodable, Identifiable {
+    struct Point: Decodable { let lon: Double?; let lat: Double? }
+    struct StructureInfo: Decodable {
+        let material: String?
+        let apartmentsCount: Int?
+        let porchCount: Int?
+        let floorType: String?
+        let gasType: String?
+        let yearOfConstruction: Int?
+        let elevatorsCount: Int?
+        let isInEmergencyState: Bool?
+        let projectType: String?
+        let chsName: String?
+        let chsCategory: String?
+    }
+    let id: String
+    let name: String
+    let addressName: String?
+    let type: String
+    let floors: Int?
+    let point: Point?
+    let structureInfo: StructureInfo?
+}
+
+struct Meta: Decodable { let apiVersion: String?; let code: Int?; let issueDate: String? }
+
+struct PlacesSearchResponse: Decodable {
+    struct Result: Decodable { let items: [PlaceItem]? }
+    let meta: Meta?
+    let result: Result?
+}
+
+struct PlaceItem: Decodable, Identifiable {
+    struct Point: Decodable { let lon: Double?; let lat: Double? }
+    struct ContactGroup: Decodable { let name: String?; let contacts: [Contact]?; struct Contact: Decodable { let type: String?; let value: String? } }
+    struct WorkingHours: Decodable { let text: String? }
+    let id: String
+    let name: String?
+    let addressName: String?
+    let point: Point?
+    let rubrics: [Rubric]?
+    let contactGroups: [ContactGroup]?
+    let workingHours: WorkingHours?
+    let links: [String: String]? // keep flexible
+    let rating: Double?
+    let reviewsCount: Int?
+    struct Rubric: Decodable { let name: String? }
+}
+
+
+################################################################################
+FILE: CatalogFlowViewModel.swift
+SIZE: 4015 bytes
+
+################################################################################
+import Foundation
+import Observation
+
+@MainActor
+@Observable
+class CatalogFlowViewModel {
+    struct FlowResult: Sendable {
+        var building: BuildingDetails?
+        var organizations: [PlaceItem]
+        var diagnostics: [String]
+    }
+
+    private let client: CatalogAPIClient
+
+    var isRunning: Bool = false
+    var lastResult: FlowResult?
+    var lastError: String?
+
+    init(apiKey: String = "6fe4cc7a-89b8-4aec-a5c3-ac94224044fe") {
+        self.client = CatalogAPIClient(apiKey: apiKey)
+    }
+
+    func run(lon: Double, lat: Double) async {
+        guard !isRunning else { return }
+        isRunning = true
+        lastError = nil
+        var diagnostics: [String] = []
+
+        var buildingId: String?
+        var buildingDetails: BuildingDetails?
+        var organizations: [PlaceItem] = []
+
+        // 1) Nearest building via geocoder with increasing radius
+        do {
+            let radii = [10, 50, 150, 300]
+            var found: GeocodeItem?
+            for r in radii {
+                let geo = try await client.geocodeBuilding(lon: lon, lat: lat, radius: r)
+                if let item = geo.result?.items?.first {
+                    found = item
+                    diagnostics.append("geocode: hit radius=\(r)")
+                    break
+                } else {
+                    diagnostics.append("geocode: empty radius=\(r)")
+                }
+            }
+            buildingId = found?.id
+        } catch {
+            diagnostics.append("geocode error: \(error.localizedDescription)")
+        }
+
+        // 2) Building details by id (best-effort)
+        if let id = buildingId {
+            let fields = "items.address,items.floors,items.structure_info.material,items.structure_info.apartments_count,items.structure_info.porch_count,items.structure_info.floor_type,items.structure_info.year_of_construction,items.structure_info.elevators_count,items.structure_info.gas_type,items.structure_info.project_type,items.structure_info.chs_name,items.structure_info.chs_category"
+            do {
+                let resp = try await client.buildingDetails(id: id, fields: fields)
+                buildingDetails = resp.result?.items?.first
+                if buildingDetails == nil { diagnostics.append("details: no items") }
+            } catch {
+                diagnostics.append("details error: \(error.localizedDescription)")
+            }
+        } else {
+            diagnostics.append("no building id — skipping details & orgs")
+        }
+
+        // 3) Organizations inside building (fallback to servicing)
+        if let id = buildingId {
+            do {
+                let resp = try await client.listIndoorOrganizations(buildingId: id, page: 1, pageSize: 12)
+                organizations = resp.result?.items ?? []
+                if organizations.isEmpty {
+                    diagnostics.append("indoor: empty; try byservicing")
+                    do {
+                        let svc = try await client.listServicing(buildingId: id, group: "default", fields: "items.contact_groups,items.working_hours,items.links")
+                        organizations = svc.result?.items ?? []
+                    } catch {
+                        diagnostics.append("byservicing error: \(error.localizedDescription)")
+                    }
+                }
+            } catch {
+                diagnostics.append("indoor error: \(error.localizedDescription)")
+                // Try servicing even if indoor failed
+                do {
+                    let svc = try await client.listServicing(buildingId: id, group: "default", fields: "items.contact_groups,items.working_hours,items.links")
+                    organizations = svc.result?.items ?? []
+                } catch {
+                    diagnostics.append("byservicing error: \(error.localizedDescription)")
+                }
+            }
+        }
+
+        self.lastResult = FlowResult(building: buildingDetails, organizations: organizations, diagnostics: diagnostics)
+        isRunning = false
+    }
+}
+
+
+################################################################################
+FILE: ContentView.swift
+SIZE: 16084 bytes
+
+################################################################################
+//
+//  ContentView.swift
+//  2gis
+//
+//  Created by Павел on 04.10.2025.
+//
+
+import SwiftUI
+import RealityKit
+import Observation
+
+struct ContentView: View {
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @Environment(\.openWindow) private var openWindow
+
+    @State private var navigationViewModel = NavigationViewModel()
+    @State private var catalogViewModel = CatalogFlowViewModel()
+    @State private var lonText: String = "37.625325"
+    @State private var latText: String = "55.695281"
+
+    // NEW:
+    @State private var locationService = LocationService()
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+            // Выбор сцены
+            ScenePickerView(appModel: appModel)
+
+            // Контроль дистанции до стрелки
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Дистанция до стрелки: \(String(format: "%.1f", appModel.arrowDistance)) м")
+                    .font(.subheadline)
+
+                HStack(spacing: 12) {
+                    Button {
+                        appModel.setArrowDistance(appModel.arrowDistance - 0.5)
+                    } label: {
+                        Label("Ближе", systemImage: "minus.circle")
+                    }
+
+                    Button {
+                        appModel.setArrowDistance(appModel.arrowDistance + 0.5)
+                    } label: {
+                        Label("Дальше", systemImage: "plus.circle")
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.vertical, 8)
+
+            // Превью сцены (стрелка или куб)
+            ScenePreview(selection: appModel.selectedScene)
+
+            Divider()
+
+            // Текущие GPS-координаты
+            gpsBlock
+
+            Divider()
+
+            // Демонстрация Navigation API
+            NavigationDemoView(viewModel: navigationViewModel)
+
+            Divider()
+
+            // Каталог по координатам
+            CatalogFlowSection(viewModel: catalogViewModel, lonText: $lonText, latText: $latText)
+            }
+            .padding(24)
+        }
+        .onAppear {
+            locationService.distanceThresholdMeters = 1.0
+            locationService.start()
+        }
+        .onChange(of: locationService.currentLocation) { _, newLoc in
+            guard let loc = newLoc else { return }
+            lonText = String(format: "%.6f", loc.coordinate.longitude)
+            latText = String(format: "%.6f", loc.coordinate.latitude)
+    
+            if locationService.checkAndSnapIfNeeded() {
+                Task {
+                    await catalogViewModel.run(lon: loc.coordinate.longitude, lat: loc.coordinate.latitude)
+                }
+            }
+        }
+        // ✅ Исправленный onChange без синтаксических ошибок
+        .onChange(of: appModel.selectedScene) { _, newSelection in
+            Task {
+                await updateImmersiveSpace(for: newSelection)
+            }
+        }
+    }
+
+
+    private var gpsBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("GPS")
+                .font(.title3).bold()
+            switch locationService.status {
+            case .authorized:
+                if let loc = locationService.currentLocation {
+                    Text(String(format: "Lat: %.6f, Lon: %.6f (±%.0f м)",
+                                loc.coordinate.latitude,
+                                loc.coordinate.longitude,
+                                loc.horizontalAccuracy))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Ожидание данных…").foregroundStyle(.secondary)
+                }
+            case .requesting:
+                Text("Запрашиваем разрешение…").foregroundStyle(.secondary)
+            case .denied:
+                Text("Доступ к геолокации запрещён. Разрешите доступ в настройках.")
+                    .foregroundStyle(.red)
+            case .restricted:
+                Text("Геолокация недоступна (ограничения системы).")
+                    .foregroundStyle(.red)
+            case .idle:
+                Text("Инициализация сервиса…").foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @MainActor
+    private func updateImmersiveSpace(for selection: AppModel.SceneSelection) async {
+        switch appModel.immersiveSpaceState {
+        case .closed:
+            appModel.immersiveSpaceState = .inTransition
+            let result = await openImmersiveSpace(id: appModel.immersiveSpaceID)
+            switch result {
+            case .opened: break
+            case .userCancelled, .error:
+                appModel.immersiveSpaceState = .closed
+            @unknown default:
+                appModel.immersiveSpaceState = .closed
+            }
+        case .open, .inTransition:
+            // Ничего: контент обновится внутри ImmersiveView при смене selectedScene
+            break
+        }
+    }
+}
+
+private struct ScenePickerView: View {
+    @Bindable var appModel: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Выбор сцены")
+                .font(.headline)
+
+            Picker("Сцена", selection: $appModel.selectedScene) {
+                Text("Плоская стрелка").tag(AppModel.SceneSelection.arrow)
+                Text("3D куб").tag(AppModel.SceneSelection.cube)
+            }
+            .pickerStyle(.segmented)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ScenePreview: View {
+    let selection: AppModel.SceneSelection
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        switch selection {
+        case .arrow:
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Окно со стрелкой", systemImage: "rectangle.on.rectangle")
+                    .font(.headline)
+                Text("Стрелка теперь в отдельном окне. Нажмите, чтобы открыть.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    openWindow(id: "ArrowWindow")
+                } label: {
+                    Label("Открыть окно стрелки", systemImage: "arrow.up.right.square")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+
+        case .cube:
+            VStack(alignment: .leading, spacing: 12) {
+                Image(systemName: "cube")
+                    .font(.largeTitle)
+                Text("Куб отображается в иммерсивной сцене перед вами. Перемещайтесь свободно — объект остаётся закреплённым в пространстве.")
+                    .font(.callout)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        }
+    }
+}
+
+private struct NavigationDemoView: View {
+    @Bindable var viewModel: NavigationViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("2GIS Navigation APIs")
+                .font(.title2)
+                .bold()
+
+            Text("Вызовы выполняются с использованием предоставленного API ключа")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button(action: loadRoute) {
+                    Label("Построить маршрут", systemImage: "car")
+                }
+                .disabled(viewModel.isLoading)
+
+                Button(action: loadMapMatch) {
+                    Label("Map matching", systemImage: "map")
+                }
+                .disabled(viewModel.isLoading)
+
+                Button(action: loadGeolocation) {
+                    Label("Radar геолокация", systemImage: "location.north.line")
+                }
+                .disabled(viewModel.isLoading)
+            }
+            .buttonStyle(.borderedProminent)
+
+            if viewModel.isLoading {
+                ProgressView()
+            }
+
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .foregroundStyle(Color.red)
+            }
+
+            if let route = viewModel.lastRouteResponse?.result.first {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Маршрут: \(route.id ?? "неизвестно")")
+                        .font(.headline)
+                    if let algorithm = route.algorithm {
+                        Text("Алгоритм: \(algorithm)")
+                            .font(.subheadline)
+                    }
+                    if let maneuvers = route.maneuvers {
+                        Text("Манёвры")
+                            .font(.subheadline)
+                            .bold()
+                        ForEach(Array(maneuvers.prefix(3).enumerated()), id: \.offset) { index, maneuver in
+                            Text("\(index + 1). \(maneuver.comment ?? "—")")
+                                .font(.footnote)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+
+            if let mapMatch = viewModel.lastMapMatchResponse {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Map matching")
+                        .font(.headline)
+                    if let distance = mapMatch.distance {
+                        Text(String(format: "Длина: %.0f м", distance))
+                    }
+                    if let duration = mapMatch.duration {
+                        Text(String(format: "Время: %.0f с", duration))
+                    }
+                    if let status = mapMatch.status {
+                        Text("Статус: \(status)")
+                            .font(.footnote)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+
+            if let location = viewModel.lastGeolocationResponse?.location {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Геолокация Radar")
+                        .font(.headline)
+                    if let latitude = location.latitude, let longitude = location.longitude {
+                        Text(String(format: "Lat: %.5f, Lon: %.5f", latitude, longitude))
+                    }
+                    if let accuracy = location.accuracy {
+                        Text(String(format: "Точность: %.0f м", accuracy))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+    }
+
+    private func loadRoute() {
+        Task { await viewModel.loadSampleRoute() }
+    }
+
+    private func loadMapMatch() {
+        Task { await viewModel.loadSampleMapMatch() }
+    }
+
+    private func loadGeolocation() {
+        Task { await viewModel.loadSampleGeolocation() }
+    }
+}
+
+private struct CatalogFlowSection: View {
+    @Bindable var viewModel: CatalogFlowViewModel
+    @Binding var lonText: String
+    @Binding var latText: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Здание и организации по координате")
+                .font(.title3)
+                .bold()
+
+            HStack(spacing: 12) {
+                TextField("lon", text: $lonText)
+                    .textFieldStyle(.roundedBorder)
+                    .keyboardType(.numbersAndPunctuation)
+                TextField("lat", text: $latText)
+                    .textFieldStyle(.roundedBorder)
+                    .keyboardType(.numbersAndPunctuation)
+                Button {
+                    Task {
+                        if let lon = Double(lonText), let lat = Double(latText) {
+                            await viewModel.run(lon: lon, lat: lat)
+                        }
+                    }
+                } label: {
+                    Label("Найти", systemImage: "building.2")
+                }
+                .disabled(viewModel.isRunning)
+            }
+
+            if viewModel.isRunning { ProgressView() }
+
+            if let result = viewModel.lastResult {
+                if let b = result.building {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(b.name).font(.headline)
+                        if let addr = b.addressName { Text(addr).font(.subheadline) }
+                        HStack(spacing: 8) {
+                            if let floors = b.floors { Text("Этажей: \(floors)") }
+                            if let material = b.structureInfo?.material { Text("Материал: \(material)") }
+                            if let year = b.structureInfo?.yearOfConstruction { Text("Год: \(year)") }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                } else {
+                    Text("Здание не найдено рядом с точкой").foregroundStyle(.secondary)
+                }
+
+                if !result.organizations.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Организации внутри")
+                            .font(.headline)
+                        ForEach(result.organizations, id: \.id) { org in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(org.name ?? "—").font(.subheadline).bold()
+                                if let addr = org.addressName { Text(addr).font(.footnote).foregroundStyle(.secondary) }
+                                if let rub = org.rubrics?.compactMap({ $0.name }).first { Text(rub).font(.footnote) }
+                            }
+                            .padding(8)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
+                } else {
+                    Text("Организации не найдены").foregroundStyle(.secondary)
+                }
+
+                if !result.diagnostics.isEmpty {
+                    Text(result.diagnostics.joined(separator: " · "))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+#Preview(windowStyle: .automatic) {
+    ContentView()
+        .environment(AppModel())
+}
+
+################################################################################
+FILE: ImmersiveView.swift
+SIZE: 3657 bytes
+
+################################################################################
+//
+//  ImmersiveView.swift
+//  2gis
+//
+//  Created by Павел on 04.10.2025.
+//
+
+import SwiftUI
+import RealityKit
+
+struct ImmersiveView: View {
+    @Environment(AppModel.self) var appModel
+
+    var body: some View {
+        RealityView { content in
+            // ---------- HEAD (стрелка) ----------
+            let headAnchor = AnchorEntity(.head)
+            headAnchor.name = "HeadAnchor"
+
+            // Плоская плашка-стрелка, смотрит на пользователя
+            let arrowSize: SIMD2<Float> = [0.40, 0.18]
+            let mesh = MeshResource.generatePlane(width: arrowSize.x, height: arrowSize.y, cornerRadius: 0.03)
+
+            var mat = UnlitMaterial()
+            mat.color = .init(tint: .init(red: 0.0, green: 0.7, blue: 1.0, alpha: 1.0))
+
+            let arrow = ModelEntity(mesh: mesh, materials: [mat])
+            arrow.name = "ArrowBillboard"
+            arrow.components.set(BillboardComponent())
+
+            // начальная позиция вперёд по -Z (клэмп 1…5 м)
+            let d0 = max(1.0 as Float, min(5.0 as Float, appModel.arrowDistance))
+            arrow.position = [0, 0, -d0]
+
+            headAnchor.addChild(arrow)
+            headAnchor.isEnabled = (appModel.selectedScene == .arrow)
+            content.add(headAnchor)
+
+            // ---------- WORLD (куб) ----------
+            let worldAnchor = AnchorEntity(world: SIMD3<Float>(0, 1.4, -1.5))
+            worldAnchor.name = "WorldAnchorCube"
+
+            let cube = ModelEntity(mesh: .generateBox(size: 0.45, cornerRadius: 0.06))
+            cube.model?.materials = [
+                SimpleMaterial(color: .init(red: 0.15, green: 0.55, blue: 0.95, alpha: 1.0),
+                               roughness: 0.25, isMetallic: true)
+            ]
+            cube.transform.rotation = simd_quatf(angle: .pi / 6, axis: SIMD3<Float>(1, 1, 0))
+            worldAnchor.addChild(cube)
+
+            let key = DirectionalLight()
+            key.light.color = .init(red: 1.0, green: 0.95, blue: 0.9, alpha: 1.0)
+            key.light.intensity = 2_000
+            key.shadow = DirectionalLightComponent.Shadow(maximumDistance: 10, depthBias: 0.02)
+            key.look(at: .zero, from: [1.5, 1.5, 1.0], relativeTo: worldAnchor)
+            worldAnchor.addChild(key)
+
+            let fill = DirectionalLight()
+            fill.light.color = .init(white: 0.8, alpha: 1.0)
+            fill.light.intensity = 600
+            fill.look(at: .zero, from: [-1.0, 0.8, -0.5], relativeTo: worldAnchor)
+            worldAnchor.addChild(fill)
+
+            worldAnchor.isEnabled = (appModel.selectedScene == .cube)
+            content.add(worldAnchor)
+
+        } update: { content in
+            // Обновляем дистанцию стрелки (всегда 1…5 м)
+            if let arrow = content.entities.first(where: { $0.name == "ArrowBillboard" }) as? ModelEntity {
+                let d = max(1.0 as Float, min(5.0 as Float, appModel.arrowDistance))
+                arrow.position = [0, 0, -d]
+            }
+            // Переключаем сцены без пересоздания
+            if let headAnchor = content.entities.first(where: { $0.name == "HeadAnchor" }) {
+                headAnchor.isEnabled = (appModel.selectedScene == .arrow)
+            }
+            if let worldAnchor = content.entities.first(where: { $0.name == "WorldAnchorCube" }) {
+                worldAnchor.isEnabled = (appModel.selectedScene == .cube)
+            }
+        }
+        .onAppear { appModel.immersiveSpaceState = .open }
+        .onDisappear { appModel.immersiveSpaceState = .closed }
+    }
+}
+
+
+
+################################################################################
+FILE: LocationService.swift
+SIZE: 3581 bytes
+
+################################################################################
+import Foundation
+import CoreLocation
+import Observation
+
+@MainActor
+@Observable
+final class LocationService: NSObject {
+    enum Status {
+        case idle, requesting, authorized, denied, restricted
+    }
+
+    private let manager = CLLocationManager()
+
+    // Публичные данные
+    var status: Status = .idle
+    var currentLocation: CLLocation?
+    var lastMeterSnapLocation: CLLocation?
+
+    // Настройки
+    var distanceThresholdMeters: CLLocationDistance = 1.0   // «каждый метр»
+    var desiredAccuracy: CLLocationAccuracy = kCLLocationAccuracyBest
+
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = desiredAccuracy
+        manager.distanceFilter = kCLDistanceFilterNone // пусть отдаёт максимально часто, фильтруем сами
+        manager.activityType = .fitness                // пешеходный кейс; можно .otherNavigation
+        manager.pausesLocationUpdatesAutomatically = true
+    }
+
+    func requestAuthorizationIfNeeded() {
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            status = .requesting
+            manager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse:
+            status = .authorized
+        case .denied:
+            status = .denied
+        case .restricted:
+            status = .restricted
+        @unknown default:
+            status = .restricted
+        }
+    }
+
+    func start() {
+        requestAuthorizationIfNeeded()
+        if case .authorized = status {
+            manager.startUpdatingLocation()
+        }
+    }
+
+    func stop() {
+        manager.stopUpdatingLocation()
+    }
+
+    /// Возвращает true, если от последней «защёлкнутой» точки пройдено >= threshold
+    @discardableResult
+    func checkAndSnapIfNeeded(threshold: CLLocationDistance? = nil) -> Bool {
+        guard let loc = currentLocation else { return false }
+        let thr = threshold ?? distanceThresholdMeters
+        if let last = lastMeterSnapLocation {
+            if loc.distance(from: last) >= thr {
+                lastMeterSnapLocation = loc
+                return true
+            }
+            return false
+        } else {
+            lastMeterSnapLocation = loc
+            return true
+        }
+    }
+}
+
+extension LocationService: CLLocationManagerDelegate {
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor in
+            switch manager.authorizationStatus {
+            case .authorizedAlways, .authorizedWhenInUse:
+                status = .authorized
+                self.manager.startUpdatingLocation()
+            case .denied:
+                status = .denied
+            case .restricted:
+                status = .restricted
+            case .notDetermined:
+                status = .requesting
+            @unknown default:
+                status = .restricted
+            }
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let latest = locations.last else { return }
+        Task { @MainActor in
+            currentLocation = latest
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        // Можно логировать/показывать пользователю
+        // print("Location error:", error.localizedDescription)
+    }
+}
+
+################################################################################
+FILE: NavigationAPIClient.swift
+SIZE: 7851 bytes
+
+################################################################################
+import Foundation
+
+/// Lightweight client for the 2GIS navigation-related APIs described in `openapi_navigation`.
+struct NavigationAPIClient {
+    struct Configuration: Sendable {
+        let routingBaseURL: URL
+        let radarBaseURL: URL
+
+        static let production = Configuration(
+            routingBaseURL: URL(string: "https://routing.api.2gis.com")!,
+            radarBaseURL: URL(string: "https://radar.api.2gis.com")!
+        )
+    }
+
+    enum APIError: LocalizedError {
+        case invalidURL
+        case httpError(statusCode: Int, body: Data)
+        case decoding(Error)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidURL:
+                return "Не удалось собрать URL для запроса."
+            case let .httpError(statusCode, _):
+                return "Сервер вернул статус-код \(statusCode)."
+            case let .decoding(error):
+                return "Ошибка декодирования ответа: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private let apiKey: String
+    private let session: URLSession
+    private let configuration: Configuration
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+
+    init(apiKey: String, session: URLSession = .shared, configuration: Configuration = .production) {
+        self.apiKey = apiKey
+        self.session = session
+        self.configuration = configuration
+
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        self.encoder = encoder
+
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        self.decoder = decoder
+    }
+}
+
+// MARK: - Public API
+
+extension NavigationAPIClient {
+    func buildRoute(_ request: RouteRequest) async throws -> RouteResponse {
+        let request = try makePOSTRequest(
+            baseURL: configuration.routingBaseURL,
+            path: "routing/7.0.0/global",
+            body: request
+        )
+        return try await send(request, decode: RouteResponse.self)
+    }
+
+    func mapMatch(_ request: MapMatchRequest) async throws -> MapMatchResponse {
+        let request = try makePOSTRequest(
+            baseURL: configuration.routingBaseURL,
+            path: "map_matching/1.0.0",
+            body: request
+        )
+        return try await send(request, decode: MapMatchResponse.self)
+    }
+
+    func geolocate(_ request: GeolocationRequest) async throws -> GeolocationResponse {
+        let request = try makePOSTRequest(
+            baseURL: configuration.radarBaseURL,
+            path: "v2/geolocation",
+            body: request
+        )
+        return try await send(request, decode: GeolocationResponse.self)
+    }
+}
+
+// MARK: - Request helpers
+
+private extension NavigationAPIClient {
+    func makePOSTRequest<T: Encodable>(baseURL: URL, path: String, body: T) throws -> URLRequest {
+        let url = baseURL.appendingPathComponent(path)
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL
+        }
+
+        var queryItems = components.queryItems ?? []
+        queryItems.append(URLQueryItem(name: "key", value: apiKey))
+        components.queryItems = queryItems
+
+        guard let finalURL = components.url else {
+            throw APIError.invalidURL
+        }
+
+        var request = URLRequest(url: finalURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try encoder.encode(body)
+        return request
+    }
+
+    func send<Response: Decodable>(_ request: URLRequest, decode type: Response.Type) async throws -> Response {
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidURL
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw APIError.httpError(statusCode: httpResponse.statusCode, body: data)
+        }
+
+        do {
+            return try decoder.decode(Response.self, from: data)
+        } catch {
+            throw APIError.decoding(error)
+        }
+    }
+}
+
+// MARK: - Routing models
+
+struct RouteRequest: Encodable {
+    enum Output: String, Codable {
+        case summary
+        case detailed
+    }
+
+    var points: [RoutePoint]
+    var transport: String?
+    var filters: [String]?
+    var output: Output?
+    var locale: String?
+    var avoid: [String]?
+}
+
+struct RoutePoint: Codable {
+    enum PointType: String, Codable {
+        case walking
+        case stop
+        case pref
+    }
+
+    var lon: Double
+    var lat: Double
+    var type: PointType
+    var start: Bool?
+
+    init(lon: Double, lat: Double, type: PointType, start: Bool? = nil) {
+        self.lon = lon
+        self.lat = lat
+        self.type = type
+        self.start = start
+    }
+}
+
+struct RouteResponse: Decodable {
+    let message: String?
+    let result: [RouteResult]
+}
+
+struct RouteResult: Decodable {
+    let algorithm: String?
+    let id: String?
+    let maneuvers: [Maneuver]?
+    let filterRoadTypes: [String]?
+}
+
+struct Maneuver: Decodable {
+    let id: String?
+    let comment: String?
+    let icon: String?
+    let outcomingPath: Segment?
+    let outcomingPathComment: String?
+
+    struct Segment: Decodable {
+        let distance: Double?
+        let duration: Double?
+        let geometry: [SegmentGeometry]?
+    }
+}
+
+struct SegmentGeometry: Decodable, Identifiable {
+    enum CodingKeys: String, CodingKey { case color, length, selection, style }
+    let id = UUID()
+    let color: String?
+    let length: Double?
+    let selection: String?
+    let style: String?
+}
+
+// MARK: - Map matching models
+
+struct MapMatchRequest: Encodable {
+    var query: [RecordedPoint]
+}
+
+struct RecordedPoint: Codable {
+    var lon: Double
+    var lat: Double
+    var utc: Int
+    var speed: Double?
+    var azimuth: Double?
+}
+
+struct MapMatchResponse: Decodable {
+    let distance: Double?
+    let duration: Double?
+    let edges: [MatchedEdge]?
+    let query: [MatchedQueryPoint]?
+    let route: String?
+    let status: String?
+}
+
+struct MatchedEdge: Decodable, Identifiable {
+    let edgeId: Int
+    let distance: Double?
+    let geometry: String?
+
+    var id: Int { edgeId }
+}
+
+struct MatchedQueryPoint: Decodable, Identifiable {
+    let utc: Int
+    let lon: Double?
+    let lat: Double?
+    let lonMatched: Double?
+    let latMatched: Double?
+    let edgeId: Int?
+    let speed: Double?
+    let azimuth: Double?
+
+    var id: Int { utc }
+}
+
+// MARK: - Radar geolocation models
+
+struct GeolocationRequest: Encodable {
+    var sessionUUID: String
+    var captureTimestampUnix: Int
+    var gnssLocation: GnssLocation?
+    var mobileNetwork: MobileNetwork?
+    var wifiAccessPoints: [WifiAccessPoint]?
+
+    struct GnssLocation: Codable {
+        var latitude: Double
+        var longitude: Double
+        var horizontalAccuracyM: Double?
+    }
+
+    struct MobileNetwork: Codable {
+        var homeMobileCountryCode: Int
+        var homeMobileNetworkCode: Int
+        var cellTowers: [CellTower]
+    }
+
+    struct CellTower: Codable {
+        var cellID: Int
+        var networkType: String
+        var locationAreaCode: Int
+        var signalStrengthDBm: Int?
+        var ageMs: Int?
+    }
+
+    struct WifiAccessPoint: Codable {
+        var macAddress: String
+        var signalStrengthDBm: Int?
+        var ageMs: Int?
+    }
+}
+
+struct GeolocationResponse: Decodable {
+    let statusCode: Int?
+    let state: String?
+    let location: Location?
+
+    struct Location: Decodable {
+        let longitude: Double?
+        let latitude: Double?
+        let accuracy: Double?
+    }
+}
+
+################################################################################
+FILE: NavigationViewModel.swift
+SIZE: 3254 bytes
+
+################################################################################
+import Foundation
+import Observation
+
+@MainActor
+@Observable
+class NavigationViewModel {
+    private let client: NavigationAPIClient
+
+    var isLoading: Bool = false
+    var lastRouteResponse: RouteResponse?
+    var lastMapMatchResponse: MapMatchResponse?
+    var lastGeolocationResponse: GeolocationResponse?
+    var errorMessage: String?
+
+    init(client: NavigationAPIClient = NavigationAPIClient(apiKey: "6fe4cc7a-89b8-4aec-a5c3-ac94224044fe")) {
+        self.client = client
+    }
+
+    func loadSampleRoute() async {
+        await execute {
+            let request = RouteRequest(
+                points: [
+                    RoutePoint(lon: 37.582591, lat: 55.775364, type: .stop),
+                    RoutePoint(lon: 37.656625, lat: 55.765036, type: .stop)
+                ],
+                transport: "driving",
+                filters: ["dirt_road", "toll_road", "ferry"],
+                output: .detailed,
+                locale: "ru"
+            )
+            lastRouteResponse = try await client.buildRoute(request)
+        }
+    }
+
+    func loadSampleMapMatch() async {
+        await execute {
+            let baseTimestamp = Int(Date().timeIntervalSince1970) - 120
+            let request = MapMatchRequest(
+                query: [
+                    RecordedPoint(lon: 37.582591, lat: 55.775364, utc: baseTimestamp, speed: 5.0, azimuth: 95),
+                    RecordedPoint(lon: 37.610000, lat: 55.772300, utc: baseTimestamp + 30, speed: 6.2, azimuth: 110),
+                    RecordedPoint(lon: 37.633200, lat: 55.769500, utc: baseTimestamp + 60, speed: 6.8, azimuth: 115),
+                    RecordedPoint(lon: 37.656625, lat: 55.765036, utc: baseTimestamp + 90, speed: 5.4, azimuth: 118)
+                ]
+            )
+            lastMapMatchResponse = try await client.mapMatch(request)
+        }
+    }
+
+    func loadSampleGeolocation() async {
+        await execute {
+            let request = GeolocationRequest(
+                sessionUUID: UUID().uuidString,
+                captureTimestampUnix: Int(Date().timeIntervalSince1970),
+                gnssLocation: .init(latitude: 55.770200, longitude: 37.620500, horizontalAccuracyM: 50),
+                mobileNetwork: .init(
+                    homeMobileCountryCode: 250,
+                    homeMobileNetworkCode: 99,
+                    cellTowers: [
+                        .init(cellID: 42012345, networkType: "lte", locationAreaCode: 41001, signalStrengthDBm: -65, ageMs: 500)
+                    ]
+                ),
+                wifiAccessPoints: [
+                    .init(macAddress: "00:11:22:33:44:55", signalStrengthDBm: -45, ageMs: 300),
+                    .init(macAddress: "66:77:88:99:AA:BB", signalStrengthDBm: -60, ageMs: 200)
+                ]
+            )
+            lastGeolocationResponse = try await client.geolocate(request)
+        }
+    }
+
+    private func execute(_ operation: @Sendable @MainActor () async throws -> Void) async {
+        guard !isLoading else { return }
+        isLoading = true
+        errorMessage = nil
+        do {
+            try await operation()
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+        isLoading = false
+    }
+}
+
+################################################################################
+FILE: ToggleImmersiveSpaceButton.swift
+SIZE: 2365 bytes
+
+################################################################################
+//
+//  ToggleImmersiveSpaceButton.swift
+//  2gis
+//
+//  Created by Павел on 04.10.2025.
+//
+
+import SwiftUI
+
+struct ToggleImmersiveSpaceButton: View {
+
+    @Environment(AppModel.self) private var appModel
+
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+
+    var body: some View {
+        Button {
+            Task { @MainActor in
+                switch appModel.immersiveSpaceState {
+                    case .open:
+                        appModel.immersiveSpaceState = .inTransition
+                        await dismissImmersiveSpace()
+                        // Don't set immersiveSpaceState to .closed because there
+                        // are multiple paths to ImmersiveView.onDisappear().
+                        // Only set .closed in ImmersiveView.onDisappear().
+
+                    case .closed:
+                        appModel.immersiveSpaceState = .inTransition
+                        switch await openImmersiveSpace(id: appModel.immersiveSpaceID) {
+                            case .opened:
+                                // Don't set immersiveSpaceState to .open because there
+                                // may be multiple paths to ImmersiveView.onAppear().
+                                // Only set .open in ImmersiveView.onAppear().
+                                break
+
+                            case .userCancelled, .error:
+                                // On error, we need to mark the immersive space
+                                // as closed because it failed to open.
+                                fallthrough
+                            @unknown default:
+                                // On unknown response, assume space did not open.
+                                appModel.immersiveSpaceState = .closed
+                        }
+
+                    case .inTransition:
+                        // This case should not ever happen because button is disabled for this case.
+                        break
+                }
+            }
+        } label: {
+            Text(appModel.immersiveSpaceState == .open ? "Hide Immersive Space" : "Show Immersive Space")
+        }
+        .disabled(appModel.immersiveSpaceState == .inTransition)
+        .animation(.none, value: 0)
+        .fontWeight(.semibold)
+    }
+}
+
+################################################################################
+FILE: _gisApp.swift
+SIZE: 1076 bytes
+
+################################################################################
+import SwiftUI
+
+@main
+struct _gisApp: App {
+    
+    @State private var appModel = AppModel()
+    @State private var avPlayerViewModel = AVPlayerViewModel()
+    
+    var body: some Scene {
+        // Главное «информационное» окно (как было)
+        WindowGroup {
+            if avPlayerViewModel.isPlaying {
+                AVPlayerView(viewModel: avPlayerViewModel)
+            } else {
+                ContentView()
+                    .environment(appModel)
+            }
+        }
+        .defaultSize(CGSize(width: 900, height: 800))
+
+        // Новое окно со стрелкой
+        WindowGroup(id: "ArrowWindow") {
+            ArrowWindow()
+                .environment(appModel)
+        }
+        .defaultSize(CGSize(width: 640, height: 320))
+
+        // Иммерсивная сцена (без изменений)
+        ImmersiveSpace(id: appModel.immersiveSpaceID) {
+            ImmersiveView()
+                .environment(appModel)
+        }
+        .immersionStyle(selection: .constant(.full), in: .full)
+    }
+}

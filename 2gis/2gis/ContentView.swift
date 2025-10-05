@@ -13,6 +13,7 @@ struct ContentView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @Environment(\.openWindow) private var openWindow
 
     @State private var navigationViewModel = NavigationViewModel()
     @State private var catalogViewModel = CatalogFlowViewModel()
@@ -25,21 +26,48 @@ struct ContentView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
-                ScenePickerView(appModel: appModel)
-                ScenePreview(selection: appModel.selectedScene)
+            // Выбор сцены
+            ScenePickerView(appModel: appModel)
 
-                Divider()
+            // Контроль дистанции до стрелки
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Дистанция до стрелки: \(String(format: "%.1f", appModel.arrowDistance)) м")
+                    .font(.subheadline)
 
-                // Отображаем текущие GPS
-                gpsBlock
+                HStack(spacing: 12) {
+                    Button {
+                        appModel.setArrowDistance(appModel.arrowDistance - 0.5)
+                    } label: {
+                        Label("Ближе", systemImage: "minus.circle")
+                    }
 
-                Divider()
+                    Button {
+                        appModel.setArrowDistance(appModel.arrowDistance + 0.5)
+                    } label: {
+                        Label("Дальше", systemImage: "plus.circle")
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.vertical, 8)
 
-                NavigationDemoView(viewModel: navigationViewModel)
+            // Превью сцены (стрелка или куб)
+            ScenePreview(selection: appModel.selectedScene)
 
-                Divider()
+            Divider()
 
-                CatalogFlowSection(viewModel: catalogViewModel, lonText: $lonText, latText: $latText)
+            // Текущие GPS-координаты
+            gpsBlock
+
+            Divider()
+
+            // Демонстрация Navigation API
+            NavigationDemoView(viewModel: navigationViewModel)
+
+            Divider()
+
+            // Каталог по координатам
+            CatalogFlowSection(viewModel: catalogViewModel, lonText: $lonText, latText: $latText)
             }
             .padding(24)
         }
@@ -49,21 +77,23 @@ struct ContentView: View {
         }
         .onChange(of: locationService.currentLocation) { _, newLoc in
             guard let loc = newLoc else { return }
-            // Обновим поля ввода — «подтягивание GPS»
             lonText = String(format: "%.6f", loc.coordinate.longitude)
             latText = String(format: "%.6f", loc.coordinate.latitude)
-
-            // Каждые >= 1 м — запускаем каталог
+    
             if locationService.checkAndSnapIfNeeded() {
                 Task {
                     await catalogViewModel.run(lon: loc.coordinate.longitude, lat: loc.coordinate.latitude)
                 }
             }
         }
+        // ✅ Исправленный onChange без синтаксических ошибок
         .onChange(of: appModel.selectedScene) { _, newSelection in
-            Task { await updateImmersiveSpace(for: newSelection) }
+            Task {
+                await updateImmersiveSpace(for: newSelection)
+            }
         }
     }
+
 
     private var gpsBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -100,26 +130,20 @@ struct ContentView: View {
 
     @MainActor
     private func updateImmersiveSpace(for selection: AppModel.SceneSelection) async {
-        switch selection {
-        case .arrow:
-            guard appModel.immersiveSpaceState == .open else { return }
-            appModel.immersiveSpaceState = .inTransition
-            await dismissImmersiveSpace()
+        // 🚫 Если сейчас меню — не пытаемся открывать Immersive
+        guard appModel.uiMode == .immersive else { return }
 
-        case .cube:
-            guard appModel.immersiveSpaceState == .closed else { return }
+        switch appModel.immersiveSpaceState {
+        case .closed:
             appModel.immersiveSpaceState = .inTransition
             let result = await openImmersiveSpace(id: appModel.immersiveSpaceID)
             switch result {
-            case .opened:
-                break
-            case .userCancelled, .error:
-                appModel.immersiveSpaceState = .closed
-                appModel.selectedScene = .arrow
-            @unknown default:
-                appModel.immersiveSpaceState = .closed
-                appModel.selectedScene = .arrow
+            case .opened: break
+            case .userCancelled, .error: appModel.immersiveSpaceState = .closed
+            @unknown default: appModel.immersiveSpaceState = .closed
             }
+        case .open, .inTransition:
+            break
         }
     }
 }
@@ -144,14 +168,28 @@ private struct ScenePickerView: View {
 
 private struct ScenePreview: View {
     let selection: AppModel.SceneSelection
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         switch selection {
         case .arrow:
-            ArrowView()
-                .frame(maxWidth: .infinity)
-                .frame(height: 240)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Окно со стрелкой", systemImage: "rectangle.on.rectangle")
+                    .font(.headline)
+                Text("Стрелка теперь в отдельном окне. Нажмите, чтобы открыть.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    openWindow(id: "ArrowWindow")
+                } label: {
+                    Label("Открыть окно стрелки", systemImage: "arrow.up.right.square")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
 
         case .cube:
             VStack(alignment: .leading, spacing: 12) {

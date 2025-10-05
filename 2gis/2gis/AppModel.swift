@@ -12,11 +12,11 @@ import SwiftUI
 @Observable
 class AppModel {
     let immersiveSpaceID = "ImmersiveSpace"
-    enum ImmersiveSpaceState {
-        case closed
-        case inTransition
-        case open
-    }
+    enum ImmersiveSpaceState { case closed, inTransition, open }
+
+    // 👇 новый флаг режима
+    enum UIMode { case immersive, menu }
+    var uiMode: UIMode = .immersive
 
     enum SceneSelection: String, CaseIterable, Equatable, Hashable {
         case arrow
@@ -25,4 +25,10 @@ class AppModel {
 
     var immersiveSpaceState = ImmersiveSpaceState.closed
     var selectedScene: SceneSelection = .arrow
+
+    // Дистанция для стрелки (м) с жёстким клэмпом 1...5
+    private(set) var arrowDistance: Float = 1.5
+    func setArrowDistance(_ meters: Float) {
+        arrowDistance = max(1.0, min(5.0, meters))
+    }
 }
