@@ -13,16 +13,25 @@ struct ContentView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+
     @State private var navigationViewModel = NavigationViewModel()
     @State private var catalogViewModel = CatalogFlowViewModel()
     @State private var lonText: String = "37.625325"
     @State private var latText: String = "55.695281"
+
+    // NEW:
+    @State private var locationService = LocationService()
 
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
                 ScenePickerView(appModel: appModel)
                 ScenePreview(selection: appModel.selectedScene)
+
+                Divider()
+
+                // Отображаем текущие GPS
+                gpsBlock
 
                 Divider()
 
@@ -34,9 +43,59 @@ struct ContentView: View {
             }
             .padding(24)
         }
+        .onAppear {
+            locationService.distanceThresholdMeters = 1.0
+            locationService.start()
+        }
+        .onChange(of: locationService.currentLocation) { _, newLoc in
+            guard let loc = newLoc else { return }
+            // Обновим поля ввода — «подтягивание GPS»
+            lonText = String(format: "%.6f", loc.coordinate.longitude)
+            latText = String(format: "%.6f", loc.coordinate.latitude)
+
+            // Каждые >= 1 м — запускаем каталог
+            if locationService.checkAndSnapIfNeeded() {
+                Task {
+                    await catalogViewModel.run(lon: loc.coordinate.longitude, lat: loc.coordinate.latitude)
+                }
+            }
+        }
         .onChange(of: appModel.selectedScene) { _, newSelection in
             Task { await updateImmersiveSpace(for: newSelection) }
         }
+    }
+
+    private var gpsBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("GPS")
+                .font(.title3).bold()
+            switch locationService.status {
+            case .authorized:
+                if let loc = locationService.currentLocation {
+                    Text(String(format: "Lat: %.6f, Lon: %.6f (±%.0f м)",
+                                loc.coordinate.latitude,
+                                loc.coordinate.longitude,
+                                loc.horizontalAccuracy))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Ожидание данных…").foregroundStyle(.secondary)
+                }
+            case .requesting:
+                Text("Запрашиваем разрешение…").foregroundStyle(.secondary)
+            case .denied:
+                Text("Доступ к геолокации запрещён. Разрешите доступ в настройках.")
+                    .foregroundStyle(.red)
+            case .restricted:
+                Text("Геолокация недоступна (ограничения системы).")
+                    .foregroundStyle(.red)
+            case .idle:
+                Text("Инициализация сервиса…").foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
     @MainActor

@@ -11,5 +11,7 @@
 		<key>UISceneConfigurations</key>
 		<dict/>
 	</dict>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Нужен доступ к геолокации для построения маршрутов и привязки окна к вашей позиции.</string>
 </dict>
 </plist>

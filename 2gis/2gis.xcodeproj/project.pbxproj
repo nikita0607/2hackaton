@@ -21,6 +21,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		E972706C2E91FEEF00F42222 /* 2gis.gpx */ = {isa = PBXFileReference; lastKnownFileType = text.xml; name = 2gis.gpx; path = 2gis/locations/2gis.gpx; sourceTree = "<group>"; };
 		E9CBE7A42E91BC7100102F4A /* 2gis.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = 2gis.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E9CBE7A82E91BC7100102F4A /* RealityKitContent */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = RealityKitContent; sourceTree = "<group>"; };
 		E9CBE7C32E91BC7300102F4A /* 2gisTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = 2gisTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -74,6 +75,7 @@
 		E9CBE79B2E91BC7100102F4A = {
 			isa = PBXGroup;
 			children = (
+				E972706C2E91FEEF00F42222 /* 2gis.gpx */,
 				E9CBE7A62E91BC7100102F4A /* 2gis */,
 				E9CBE7A72E91BC7100102F4A /* Packages */,
 				E9CBE7C62E91BC7300102F4A /* 2gisTests */,
