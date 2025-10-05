@@ -86,4 +86,42 @@ class NavigationViewModel {
         }
         isLoading = false
     }
+
+    // MARK: - Extract maneuver nodes and full polyline
+    func extractManeuverNodes(from response: RouteResponse) -> [ManeuverNode] {
+        guard let route = response.result?.first, let mans = route.maneuvers else { return [] }
+        return mans.compactMap { m in
+            guard let sel = m.outcomingPath?.geometry?.first?.selection else { return nil }
+            guard let first = WKT.parseLineString(sel).first else { return nil }
+            let icon = (m.icon ?? "")
+            let title: String = (icon == "turn_right") ? "↱" :
+                                (icon == "turn_left")  ? "↰" :
+                                (icon == "finish")     ? "●" :
+                                (icon == "start")      ? "◎" : "⬆︎"
+            return ManeuverNode(lon: first.lon, lat: first.lat, title: title, detail: m.outcomingPathComment ?? m.comment)
+        }
+    }
+
+    func extractFullPolyline(from response: RouteResponse) -> RoutePolyline {
+        guard let route = response.result?.first, let mans = route.maneuvers else {
+            return .init(points: [])
+        }
+        var all: [GeoPoint] = []
+    
+        for m in mans {
+            if let sel = m.outcomingPath?.geometry?.first?.selection {
+                let pts = WKT.parseLineString(sel) // [(lon, lat)]
+                guard !pts.isEmpty else { continue }
+                // Склеиваем, избегая дубля первой вершины
+                if let last = all.last, let first = pts.first,
+                   last.lon == first.lon, last.lat == first.lat {
+                    all.append(contentsOf: pts.dropFirst().map { GeoPoint(lon: $0.lon, lat: $0.lat) })
+                } else {
+                    all.append(contentsOf: pts.map { GeoPoint(lon: $0.lon, lat: $0.lat) })
+                }
+            }
+        }
+        return .init(points: all)
+    }
+
 }

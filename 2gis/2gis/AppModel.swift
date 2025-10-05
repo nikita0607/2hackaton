@@ -34,4 +34,12 @@ class AppModel {
     func setArrowDistance(_ meters: Float) {
         arrowDistance = max(1.0, min(5.0, meters))
     }
+
+    
+    // === Route overlay state (для окна NavigationDemoView и окон-билбордов) ===
+    var routeOriginLonLat: (lon: Double, lat: Double)?
+    var maneuverNodes: [ManeuverNode] = []
+    var routePolyline: RoutePolyline = .init(points: [])
+    // чтобы не открывать дубликаты окон
+    var openedBillboardNodeIDs: Set<UUID> = []
 }

@@ -11,79 +11,129 @@ import Observation
 
 struct ContentView: View {
     @Environment(AppModel.self) private var appModel
-    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
-    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openWindow) private var openWindow
 
     @State private var navigationViewModel = NavigationViewModel()
     @State private var catalogViewModel = CatalogFlowViewModel()
-    
+
     @State private var destPoint: RoutePoint = RoutePoint(lon: 0, lat: 0, type: RoutePoint.PointType.stop)
     @State private var destinationPlaceText: String = ""
-    
+
     @State private var lonText: String = "37.625325"
     @State private var latText: String = "55.695281"
 
-    // NEW:
+    // Текущая геолокация (для echo-origin и фонового каталога)
     @State private var locationService = LocationService()
+
+    // Чтобы не обрабатывать один и тот же маршрут повторно
+    @State private var lastProcessedRouteToken: String?
+
+    // Стабильный токен для .task(id:) — берём route.id; если его нет, делаем безопасный ключ
+    private var routeToken: String {
+        if let r = navigationViewModel.lastRouteResponse?.result?.first {
+            return (r.id ?? "no-id") + "|\(r.maneuvers?.count ?? -1)"
+        }
+        return "no-route"
+    }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
-            // Выбор сцены
-            // ScenePickerView(appModel: appModel)
+                // Текущие GPS-координаты
+                gpsBlock
 
-            // Текущие GPS-координаты
-            gpsBlock
+                Divider()
 
-            Divider()
+                // Демонстрация Navigation API
+                NavigationDemoView(
+                    viewModel: navigationViewModel,
+                    addrText: $destinationPlaceText,
+                    locationService: $locationService,
+                    destPoint: $destPoint
+                )
 
-            // Демонстрация Navigation API
-                NavigationDemoView(viewModel: navigationViewModel, addrText: $destinationPlaceText, locationService: $locationService, destPoint: $destPoint)
+                // Эскиз всего маршрута (по манёврам и полной полилинии)
+                RouteOverlayPanel(
+                    origin: appModel.routeOriginLonLat,
+                    polyline: appModel.routePolyline,
+                    nodes: appModel.maneuverNodes
+                )
 
-            Divider()
+                Divider()
 
-            // Каталог по координатам
-            CatalogFlowSection(viewModel: catalogViewModel, lonText: $lonText, latText: $latText)
+                // Каталог по координатам
+                CatalogFlowSection(
+                    viewModel: catalogViewModel,
+                    lonText: $lonText,
+                    latText: $latText
+                )
             }
             .padding(24)
         }
         .onAppear {
             locationService.distanceThresholdMeters = 1.0
             locationService.start()
-            if appModel.selectedScene == .arrow && !appModel.hasOpenedArrowWindowOnce {
-                openWindow(id: "ArrowWindow1")
-                openWindow(id: "ArrowWindow2")
-                openWindow(id: "ArrowWindow3")
-                appModel.hasOpenedArrowWindowOnce = true
-            }
-//            Task { await updateImmersiveSpace(for: appModel.selectedScene) }
         }
         .onChange(of: locationService.currentLocation) { _, newLoc in
             guard let loc = newLoc else { return }
             lonText = String(format: "%.6f", loc.coordinate.longitude)
             latText = String(format: "%.6f", loc.coordinate.latitude)
-    
+
             if locationService.checkAndSnapIfNeeded() {
                 Task {
-                    await catalogViewModel.run(lon: loc.coordinate.longitude, lat: loc.coordinate.latitude)
+                    await catalogViewModel.run(
+                        lon: loc.coordinate.longitude,
+                        lat: loc.coordinate.latitude
+                    )
                 }
             }
         }
-        // ✅ Изменение сцены: открыть окна стрелок и синхронизировать Immersive
-        .onChange(of: appModel.selectedScene) { _, newSelection in
-            Task {
-                if newSelection == .arrow && !appModel.hasOpenedArrowWindowOnce {
-                    openWindow(id: "ArrowWindow1")
-                    openWindow(id: "ArrowWindow2")
-                    openWindow(id: "ArrowWindow3")
-                    appModel.hasOpenedArrowWindowOnce = true
-                }
-//                await updateImmersiveSpace(for: newSelection)
+        // ✅ БЕЗ Equatable: побочные действия при смене маршрута — через .task(id:)
+        // SwiftUI перезапустит этот блок, когда поменяется routeToken (обычно = route.id).
+        .task(id: routeToken) {
+            guard routeToken != "no-route",
+                  routeToken != lastProcessedRouteToken,
+                  let resp = navigationViewModel.lastRouteResponse else { return }
+
+            // 1) Origin — фиксируем на момент построения маршрута
+            if let loc = locationService.currentLocation {
+                appModel.routeOriginLonLat = (
+                    lon: loc.coordinate.longitude,
+                    lat: loc.coordinate.latitude
+                )
+            } else {
+                // Фоллбэк: если нет GPS, возьмём первую точку из полилинии (ниже её построим)
+                appModel.routeOriginLonLat = nil
             }
+
+            // 2) Узлы манёвров + цельная полилиния (локальные функции ниже)
+            let nodes = extractManeuverNodes(from: resp)
+            var full  = extractFullPolyline(from: resp)
+
+            // Если origin ещё пуст — выберем первую точку маршрута
+            if appModel.routeOriginLonLat == nil {
+                if let first = full.points.first {
+                    appModel.routeOriginLonLat = (lon: first.lon, lat: first.lat)
+                } else if let n = nodes.first {
+                    appModel.routeOriginLonLat = (lon: n.lon, lat: n.lat)
+                }
+            }
+
+            appModel.maneuverNodes = nodes
+            appModel.routePolyline = full
+
+            // 3) Автоподъём независимых окон-билбордов по всем узлам (ограничим число)
+            let maxWindows = 8
+            for node in nodes.prefix(maxWindows) where !appModel.openedBillboardNodeIDs.contains(node.id) {
+                openWindow(id: "SignpostWindow", value: node)
+                appModel.openedBillboardNodeIDs.insert(node.id)
+            }
+
+            lastProcessedRouteToken = routeToken
         }
     }
 
+    // MARK: - GPS Block
 
     private var gpsBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -117,78 +167,12 @@ struct ContentView: View {
         .padding()
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
-
-    // @MainActor
-    // private func updateImmersiveSpace(for selection: AppModel.SceneSelection) async {
-    //     // 🚫 Если сейчас меню — не пытаемся открывать Immersive
-    //     guard appModel.uiMode == .immersive else { return }
-
-    //     switch appModel.immersiveSpaceState {
-    //     case .closed:
-    //         appModel.immersiveSpaceState = .inTransition
-    //         let result = await openImmersiveSpace(id: appModel.immersiveSpaceID)
-    //         switch result {
-    //         case .opened: break
-    //         case .userCancelled, .error: appModel.immersiveSpaceState = .closed
-    //         @unknown default: appModel.immersiveSpaceState = .closed
-    //         }
-    //     case .open, .inTransition:
-    //         break
-    //     }
-    // }
 }
 
-private struct ScenePickerView: View {
-    @Bindable var appModel: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Выбор сцены")
-                .font(.headline)
-
-            Picker("Сцена", selection: $appModel.selectedScene) {
-                Text("Плоская стрелка").tag(AppModel.SceneSelection.arrow)
-                Text("3D куб").tag(AppModel.SceneSelection.cube)
-            }
-            .pickerStyle(.segmented)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct ScenePreview: View {
-    let selection: AppModel.SceneSelection
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        switch selection {
-        case .arrow:
-            VStack(alignment: .leading, spacing: 12) {
-                Label("Окна со стрелкой", systemImage: "rectangle.on.rectangle")
-                    .font(.headline)
-                Text("Три окна со стрелкой открываются автоматически. В иммерсивной сцене показаны три стрелки с шагом 1 м по глубине.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-
-        case .cube:
-            VStack(alignment: .leading, spacing: 12) {
-                Image(systemName: "cube")
-                    .font(.largeTitle)
-                Text("Куб отображается в иммерсивной сцене перед вами. Перемещайтесь свободно — объект остаётся закреплённым в пространстве.")
-                    .font(.callout)
-            }
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-        }
-    }
-}
+// MARK: - NavigationDemoView (как раньше)
 
 private struct NavigationDemoView: View {
+    @Environment(AppModel.self) private var appModel
     @Bindable var viewModel: NavigationViewModel
     @Binding var addrText: String
     @Binding var locationService: LocationService
@@ -196,157 +180,76 @@ private struct NavigationDemoView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("2GIS Navigation APIs")
-                .font(.title2)
-                .bold()
+            Text("2GIS Navigation APIs").font(.title2).bold()
 
             TextField("addr", text: $addrText)
                 .textFieldStyle(.roundedBorder)
                 .keyboardType(.numbersAndPunctuation)
-            
-            Button(action: savePointFromAddr) {
-                Label("Найти адрессс", systemImage: "house")
-            }
-            
 
             HStack {
+                Button(action: savePointFromAddr) {
+                    Label("Найти адрессс", systemImage: "house")
+                }
                 Button(action: loadRoute) {
                     Label("Построить маршрут", systemImage: "car")
                 }
                 .disabled(viewModel.isLoading)
-
-                // Button(action: loadMapMatch) {
-                //     Label("Map matching", systemImage: "map")
-                // }
-                // .disabled(viewModel.isLoading)
-
-                // Button(action: loadGeolocation) {
-                //     Label("Radar геолокация", systemImage: "location.north.line")
-                // }
-                // .disabled(viewModel.isLoading)
             }
             .buttonStyle(.borderedProminent)
 
-            if viewModel.isLoading {
-                ProgressView()
-            }
+            if viewModel.isLoading { ProgressView() }
 
             if let error = viewModel.errorMessage {
-                Text(error)
-                    .foregroundStyle(Color.red)
+                Text(error).foregroundStyle(.red)
             }
 
             if let route = viewModel.lastRouteResponse?.result?.first {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Маршрут: \(route.id ?? "неизвестно")")
-                        .font(.headline)
+                    Text("Маршрут: \(route.id ?? "неизвестно")").font(.headline)
                     if let algorithm = route.algorithm {
-                        Text("Алгоритм: \(algorithm)")
-                            .font(.subheadline)
+                        Text("Алгоритм: \(algorithm)").font(.subheadline)
                     }
                     if let maneuvers = route.maneuvers {
-                        Text("Манёвры")
-                            .font(.subheadline)
-                            .bold()
+                        Text("Манёвры").font(.subheadline).bold()
                         ForEach(Array(maneuvers.prefix(3).enumerated()), id: \.offset) { index, maneuver in
-                            Text("\(index + 1). \(maneuver.comment ?? "—")")
-                                .font(.footnote)
+                            Text("\(index + 1). \(maneuver.comment ?? "—")").font(.footnote)
                         }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            } else {
+                Text("Постройте маршрут, чтобы увидеть оверлей.")
+                    .foregroundStyle(.secondary)
             }
-
-            // if let mapMatch = viewModel.lastMapMatchResponse {
-            //     VStack(alignment: .leading, spacing: 8) {
-            //         Text("Map matching")
-            //             .font(.headline)
-            //         if let distance = mapMatch.distance {
-            //             Text(String(format: "Длина: %.0f м", distance))
-            //         }
-            //         if let duration = mapMatch.duration {
-            //             Text(String(format: "Время: %.0f с", duration))
-            //         }
-            //         if let status = mapMatch.status {
-            //             Text("Статус: \(status)")
-            //                 .font(.footnote)
-            //         }
-            //     }
-            //     .frame(maxWidth: .infinity, alignment: .leading)
-            //     .padding()
-            //     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            // }
-
-            // if let location = viewModel.lastGeolocationResponse?.location {
-            //     VStack(alignment: .leading, spacing: 8) {
-            //         Text("Геолокация Radar")
-            //             .font(.headline)
-            //         if let latitude = location.latitude, let longitude = location.longitude {
-            //             Text(String(format: "Lat: %.5f, Lon: %.5f", latitude, longitude))
-            //         }
-            //         if let accuracy = location.accuracy {
-            //             Text(String(format: "Точность: %.0f м", accuracy))
-            //         }
-            //     }
-            //     .frame(maxWidth: .infinity, alignment: .leading)
-            //     .padding()
-            //     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            // }
         }
     }
-    
+
     private func savePointFromAddr() {
-        Task { 
+        Task {
             do {
                 let client = DGisPlacesClient(
                     config: DGisPlacesClient.Config(apiKey: "6fe4cc7a-89b8-4aec-a5c3-ac94224044fe")
                 )
-
-                // bestMatch бросит ошибку, если ничего не найдено
                 let best = try await client.bestMatch(self.addrText)
-
-                // безопасно распакуем координаты
-                guard let p = best.point,
-                      let lon = p.lon,
-                      let lat = p.lat else {
-                    return
-                }
-
-                // обновляем UI на главном потоке
+                guard let p = best.point, let lon = p.lon, let lat = p.lat else { return }
                 await MainActor.run {
                     self.addrText = best.addressName ?? best.name
-
-                    // ВАРИАНТ 1: если у тебя инициализатор помеченный:
-                    self.destPoint = RoutePoint(lon: best.point!.lon!, lat: best.point!.lat!, type:RoutePoint.PointType.stop)
-
-                    // ВАРИАНТ 2: если требуется ещё type:
-                    // self.destPoint = RoutePoint(lon: lon, lat: lat, type: .pref)
-
-                    // ВАРИАНТ 3: если у тебя позиционный init:
-                    // self.destPoint = RoutePoint(lon, lat)
+                    self.destPoint = RoutePoint(lon: lon, lat: lat, type: .stop)
                 }
             } catch {
-                // обработай/залогуй ошибку
                 print("Search failed:", error)
             }
         }
     }
 
-
     private func loadRoute() {
-        Task { await viewModel.loadSampleRoute(locationService: locationService, destinationPoint:destPoint) }
-    }
-
-    private func loadMapMatch() {
-        Task { await viewModel.loadSampleMapMatch() }
-    }
-
-    private func loadGeolocation() {
-        Task { await viewModel.loadSampleGeolocation() }
+        Task { await viewModel.loadSampleRoute(locationService: locationService, destinationPoint: destPoint) }
     }
 }
+
+// MARK: - Catalog Flow Section (как было)
 
 private struct CatalogFlowSection: View {
     @Bindable var viewModel: CatalogFlowViewModel
@@ -356,8 +259,7 @@ private struct CatalogFlowSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Здание и организации по координате")
-                .font(.title3)
-                .bold()
+                .font(.title3).bold()
 
             HStack(spacing: 12) {
                 TextField("lon", text: $lonText)
@@ -400,8 +302,7 @@ private struct CatalogFlowSection: View {
 
                 if !result.organizations.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Организации внутри")
-                            .font(.headline)
+                        Text("Организации внутри").font(.headline)
                         ForEach(result.organizations, id: \.id) { org in
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(org.name ?? "—").font(.subheadline).bold()
@@ -426,7 +327,105 @@ private struct CatalogFlowSection: View {
     }
 }
 
-#Preview(windowStyle: .automatic) {
-    ContentView()
-        .environment(AppModel())
+// MARK: - 2D Sketch Panel (Canvas) — полный маршрут + узлы манёвров
+
+struct RouteOverlayPanel: View {
+    let origin: (lon: Double, lat: Double)?
+    let polyline: RoutePolyline
+    let nodes: [ManeuverNode]
+
+    private let panelHeight: CGFloat = 240
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Маршрут (эскиз)").font(.headline)
+            Canvas { ctx, size in
+                guard let origin, !polyline.points.isEmpty else {
+                    ctx.draw(Text("Нет данных для отрисовки"),
+                             at: CGPoint(x: size.width/2, y: size.height/2))
+                    return
+                }
+                // 1) Гео → «метры» (локальная ENU от origin)
+                let meters: [SIMD2<Double>] = polyline.points.map {
+                    Geo.geoToMeters(lon: $0.lon, lat: $0.lat,
+                                    originLon: origin.lon, originLat: origin.lat)
+                }
+
+                // 2) Нормализация в виджет с отступами
+                let inset = 18.0
+                let xs = meters.map { $0.x }, zs = meters.map { $0.y }
+                guard let minX = xs.min(), let maxX = xs.max(),
+                      let minZ = zs.min(), let maxZ = zs.max() else { return }
+                let w = max(maxX - minX, 1.0), h = max(maxZ - minZ, 1.0)
+                let scale = min(Double(size.width - inset*2)/w,
+                                Double(size.height - inset*2)/h)
+
+                func mapPoint(_ m: SIMD2<Double>) -> CGPoint {
+                    let x = (m.x - minX) * scale + inset
+                    let y = (m.y - minZ) * scale + inset
+                    // инвертируем по вертикали (экранная Y вниз)
+                    return CGPoint(x: x, y: Double(size.height) - y)
+                }
+
+                // 3) Линия маршрута
+                var path = Path()
+                path.move(to: mapPoint(meters[0]))
+                for i in 1..<meters.count { path.addLine(to: mapPoint(meters[i])) }
+                ctx.stroke(path, with: .color(.white.opacity(0.85)), lineWidth: 4)
+
+                // 4) Узлы-манёвры
+                for (i, n) in nodes.enumerated() {
+                    let p2 = Geo.geoToMeters(lon: n.lon, lat: n.lat,
+                                             originLon: origin.lon, originLat: origin.lat)
+                    let p = mapPoint(p2)
+                    let r: CGFloat = (i == 0 || i == nodes.count-1) ? 6 : 4
+                    let rect = CGRect(x: p.x - r, y: p.y - r, width: r*2, height: r*2)
+                    ctx.fill(Path(ellipseIn: rect),
+                             with: .color(i == 0 ? .green : (i == nodes.count-1 ? .red : .cyan)))
+                }
+            }
+            .frame(height: panelHeight)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Локальные хелперы извлечения данных из RouteResponse (без зависимостей от ViewModel)
+
+private func extractManeuverNodes(from response: RouteResponse) -> [ManeuverNode] {
+    guard let route = response.result?.first, let mans = route.maneuvers else { return [] }
+    return mans.compactMap { m in
+        guard let sel = m.outcomingPath?.geometry?.first?.selection else { return nil }
+        guard let first = WKT.parseLineString(sel).first else { return nil }
+        let t: String
+        switch (m.icon ?? "") {
+        case "turn_right": t = "↱"
+        case "turn_left":  t = "↰"
+        case "finish":     t = "●"
+        case "start":      t = "◎"
+        default:           t = "⬆︎"
+        }
+        return ManeuverNode(lon: first.lon, lat: first.lat, title: t, detail: m.outcomingPathComment ?? m.comment)
+    }
+}
+
+private func extractFullPolyline(from response: RouteResponse) -> RoutePolyline {
+    guard let route = response.result?.first, let mans = route.maneuvers else {
+        return .init(points: [])
+    }
+    var all: [GeoPoint] = []
+    for m in mans {
+        if let sel = m.outcomingPath?.geometry?.first?.selection {
+            let pts = WKT.parseLineString(sel) // [(lon, lat)]
+            guard !pts.isEmpty else { continue }
+            if let last = all.last, let first = pts.first,
+               last.lon == first.lon, last.lat == first.lat {
+                all.append(contentsOf: pts.dropFirst().map { GeoPoint(lon: $0.lon, lat: $0.lat) })
+            } else {
+                all.append(contentsOf: pts.map { GeoPoint(lon: $0.lon, lat: $0.lat) })
+            }
+        }
+    }
+    return .init(points: all)
 }

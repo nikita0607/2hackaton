@@ -1,7 +1,7 @@
 
 ################################################################################
 FILE: AppModel.swift
-SIZE: 859 bytes
+SIZE: 1051 bytes
 
 ################################################################################
 //
@@ -31,6 +31,9 @@ class AppModel {
 
     var immersiveSpaceState = ImmersiveSpaceState.closed
     var selectedScene: SceneSelection = .arrow
+
+    // ✅ Добавь этот флаг — используется в ContentView для одноразового открытия окон
+    var hasOpenedArrowWindowOnce: Bool = false
 
     // Дистанция для стрелки (м) с жёстким клэмпом 1...5
     private(set) var arrowDistance: Float = 1.5
@@ -383,7 +386,7 @@ class CatalogFlowViewModel {
 
 ################################################################################
 FILE: ContentView.swift
-SIZE: 16643 bytes
+SIZE: 17899 bytes
 
 ################################################################################
 //
@@ -405,6 +408,10 @@ struct ContentView: View {
 
     @State private var navigationViewModel = NavigationViewModel()
     @State private var catalogViewModel = CatalogFlowViewModel()
+    
+    @State private var destPoint: RoutePoint = RoutePoint(lon: 0, lat: 0, type: RoutePoint.PointType.stop)
+    @State private var destinationPlaceText: String = ""
+    
     @State private var lonText: String = "37.625325"
     @State private var latText: String = "55.695281"
 
@@ -415,34 +422,7 @@ struct ContentView: View {
         ScrollView {
             VStack(spacing: 24) {
             // Выбор сцены
-            ScenePickerView(appModel: appModel)
-
-            // Контроль дистанции до стрелки
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Дистанция до стрелки: \(String(format: "%.1f", appModel.arrowDistance)) м")
-                    .font(.subheadline)
-
-                HStack(spacing: 12) {
-                    Button {
-                        appModel.setArrowDistance(appModel.arrowDistance - 0.5)
-                    } label: {
-                        Label("Ближе", systemImage: "minus.circle")
-                    }
-
-                    Button {
-                        appModel.setArrowDistance(appModel.arrowDistance + 0.5)
-                    } label: {
-                        Label("Дальше", systemImage: "plus.circle")
-                    }
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(.vertical, 8)
-
-            // Превью сцены (стрелка или куб)
-            ScenePreview(selection: appModel.selectedScene)
-
-            Divider()
+            // ScenePickerView(appModel: appModel)
 
             // Текущие GPS-координаты
             gpsBlock
@@ -450,7 +430,7 @@ struct ContentView: View {
             Divider()
 
             // Демонстрация Navigation API
-            NavigationDemoView(viewModel: navigationViewModel)
+                NavigationDemoView(viewModel: navigationViewModel, addrText: $destinationPlaceText, locationService: $locationService, destPoint: $destPoint)
 
             Divider()
 
@@ -468,7 +448,7 @@ struct ContentView: View {
                 openWindow(id: "ArrowWindow3")
                 appModel.hasOpenedArrowWindowOnce = true
             }
-            Task { await updateImmersiveSpace(for: appModel.selectedScene) }
+//            Task { await updateImmersiveSpace(for: appModel.selectedScene) }
         }
         .onChange(of: locationService.currentLocation) { _, newLoc in
             guard let loc = newLoc else { return }
@@ -490,7 +470,7 @@ struct ContentView: View {
                     openWindow(id: "ArrowWindow3")
                     appModel.hasOpenedArrowWindowOnce = true
                 }
-                await updateImmersiveSpace(for: newSelection)
+//                await updateImmersiveSpace(for: newSelection)
             }
         }
     }
@@ -529,24 +509,24 @@ struct ContentView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
-    @MainActor
-    private func updateImmersiveSpace(for selection: AppModel.SceneSelection) async {
-        // 🚫 Если сейчас меню — не пытаемся открывать Immersive
-        guard appModel.uiMode == .immersive else { return }
+    // @MainActor
+    // private func updateImmersiveSpace(for selection: AppModel.SceneSelection) async {
+    //     // 🚫 Если сейчас меню — не пытаемся открывать Immersive
+    //     guard appModel.uiMode == .immersive else { return }
 
-        switch appModel.immersiveSpaceState {
-        case .closed:
-            appModel.immersiveSpaceState = .inTransition
-            let result = await openImmersiveSpace(id: appModel.immersiveSpaceID)
-            switch result {
-            case .opened: break
-            case .userCancelled, .error: appModel.immersiveSpaceState = .closed
-            @unknown default: appModel.immersiveSpaceState = .closed
-            }
-        case .open, .inTransition:
-            break
-        }
-    }
+    //     switch appModel.immersiveSpaceState {
+    //     case .closed:
+    //         appModel.immersiveSpaceState = .inTransition
+    //         let result = await openImmersiveSpace(id: appModel.immersiveSpaceID)
+    //         switch result {
+    //         case .opened: break
+    //         case .userCancelled, .error: appModel.immersiveSpaceState = .closed
+    //         @unknown default: appModel.immersiveSpaceState = .closed
+    //         }
+    //     case .open, .inTransition:
+    //         break
+    //     }
+    // }
 }
 
 private struct ScenePickerView: View {
@@ -601,6 +581,9 @@ private struct ScenePreview: View {
 
 private struct NavigationDemoView: View {
     @Bindable var viewModel: NavigationViewModel
+    @Binding var addrText: String
+    @Binding var locationService: LocationService
+    @Binding var destPoint: RoutePoint
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -608,9 +591,14 @@ private struct NavigationDemoView: View {
                 .font(.title2)
                 .bold()
 
-            Text("Вызовы выполняются с использованием предоставленного API ключа")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            TextField("addr", text: $addrText)
+                .textFieldStyle(.roundedBorder)
+                .keyboardType(.numbersAndPunctuation)
+            
+            Button(action: savePointFromAddr) {
+                Label("Найти адрессс", systemImage: "house")
+            }
+            
 
             HStack {
                 Button(action: loadRoute) {
@@ -618,15 +606,15 @@ private struct NavigationDemoView: View {
                 }
                 .disabled(viewModel.isLoading)
 
-                Button(action: loadMapMatch) {
-                    Label("Map matching", systemImage: "map")
-                }
-                .disabled(viewModel.isLoading)
+                // Button(action: loadMapMatch) {
+                //     Label("Map matching", systemImage: "map")
+                // }
+                // .disabled(viewModel.isLoading)
 
-                Button(action: loadGeolocation) {
-                    Label("Radar геолокация", systemImage: "location.north.line")
-                }
-                .disabled(viewModel.isLoading)
+                // Button(action: loadGeolocation) {
+                //     Label("Radar геолокация", systemImage: "location.north.line")
+                // }
+                // .disabled(viewModel.isLoading)
             }
             .buttonStyle(.borderedProminent)
 
@@ -639,7 +627,7 @@ private struct NavigationDemoView: View {
                     .foregroundStyle(Color.red)
             }
 
-            if let route = viewModel.lastRouteResponse?.result.first {
+            if let route = viewModel.lastRouteResponse?.result?.first {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Маршрут: \(route.id ?? "неизвестно")")
                         .font(.headline)
@@ -662,46 +650,84 @@ private struct NavigationDemoView: View {
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
 
-            if let mapMatch = viewModel.lastMapMatchResponse {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Map matching")
-                        .font(.headline)
-                    if let distance = mapMatch.distance {
-                        Text(String(format: "Длина: %.0f м", distance))
-                    }
-                    if let duration = mapMatch.duration {
-                        Text(String(format: "Время: %.0f с", duration))
-                    }
-                    if let status = mapMatch.status {
-                        Text("Статус: \(status)")
-                            .font(.footnote)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            }
+            // if let mapMatch = viewModel.lastMapMatchResponse {
+            //     VStack(alignment: .leading, spacing: 8) {
+            //         Text("Map matching")
+            //             .font(.headline)
+            //         if let distance = mapMatch.distance {
+            //             Text(String(format: "Длина: %.0f м", distance))
+            //         }
+            //         if let duration = mapMatch.duration {
+            //             Text(String(format: "Время: %.0f с", duration))
+            //         }
+            //         if let status = mapMatch.status {
+            //             Text("Статус: \(status)")
+            //                 .font(.footnote)
+            //         }
+            //     }
+            //     .frame(maxWidth: .infinity, alignment: .leading)
+            //     .padding()
+            //     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            // }
 
-            if let location = viewModel.lastGeolocationResponse?.location {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Геолокация Radar")
-                        .font(.headline)
-                    if let latitude = location.latitude, let longitude = location.longitude {
-                        Text(String(format: "Lat: %.5f, Lon: %.5f", latitude, longitude))
-                    }
-                    if let accuracy = location.accuracy {
-                        Text(String(format: "Точность: %.0f м", accuracy))
-                    }
+            // if let location = viewModel.lastGeolocationResponse?.location {
+            //     VStack(alignment: .leading, spacing: 8) {
+            //         Text("Геолокация Radar")
+            //             .font(.headline)
+            //         if let latitude = location.latitude, let longitude = location.longitude {
+            //             Text(String(format: "Lat: %.5f, Lon: %.5f", latitude, longitude))
+            //         }
+            //         if let accuracy = location.accuracy {
+            //             Text(String(format: "Точность: %.0f м", accuracy))
+            //         }
+            //     }
+            //     .frame(maxWidth: .infinity, alignment: .leading)
+            //     .padding()
+            //     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            // }
+        }
+    }
+    
+    private func savePointFromAddr() {
+        Task { 
+            do {
+                let client = DGisPlacesClient(
+                    config: DGisPlacesClient.Config(apiKey: "6fe4cc7a-89b8-4aec-a5c3-ac94224044fe")
+                )
+
+                // bestMatch бросит ошибку, если ничего не найдено
+                let best = try await client.bestMatch(self.addrText)
+
+                // безопасно распакуем координаты
+                guard let p = best.point,
+                      let lon = p.lon,
+                      let lat = p.lat else {
+                    return
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+
+                // обновляем UI на главном потоке
+                await MainActor.run {
+                    self.addrText = best.addressName ?? best.name
+
+                    // ВАРИАНТ 1: если у тебя инициализатор помеченный:
+                    self.destPoint = RoutePoint(lon: best.point!.lon!, lat: best.point!.lat!, type:RoutePoint.PointType.stop)
+
+                    // ВАРИАНТ 2: если требуется ещё type:
+                    // self.destPoint = RoutePoint(lon: lon, lat: lat, type: .pref)
+
+                    // ВАРИАНТ 3: если у тебя позиционный init:
+                    // self.destPoint = RoutePoint(lon, lat)
+                }
+            } catch {
+                // обработай/залогуй ошибку
+                print("Search failed:", error)
             }
         }
     }
 
+
     private func loadRoute() {
-        Task { await viewModel.loadSampleRoute() }
+        Task { await viewModel.loadSampleRoute(locationService: locationService, destinationPoint:destPoint) }
     }
 
     private func loadMapMatch() {
@@ -1017,13 +1043,19 @@ extension LocationService: CLLocationManagerDelegate {
 
 ################################################################################
 FILE: NavigationAPIClient.swift
-SIZE: 7851 bytes
+SIZE: 11756 bytes
 
 ################################################################################
 import Foundation
+import CoreLocation
 
-/// Lightweight client for the 2GIS navigation-related APIs described in `openapi_navigation`.
+// MARK: - Navigation API Client
+
+/// Lightweight client for 2GIS navigation-related APIs (Routing, Map Matching, Radar).
 struct NavigationAPIClient {
+
+    // MARK: Configuration
+
     struct Configuration: Sendable {
         let routingBaseURL: URL
         let radarBaseURL: URL
@@ -1034,10 +1066,13 @@ struct NavigationAPIClient {
         )
     }
 
+    // MARK: Errors
+
     enum APIError: LocalizedError {
         case invalidURL
         case httpError(statusCode: Int, body: Data)
-        case decoding(Error)
+        case decoding(DecodingError)          // конкретно DecodingError (чтобы видеть, что именно не так)
+        case decodingOther(Error)             // на случай другой ошибки при decode()
 
         var errorDescription: String? {
             switch self {
@@ -1045,11 +1080,15 @@ struct NavigationAPIClient {
                 return "Не удалось собрать URL для запроса."
             case let .httpError(statusCode, _):
                 return "Сервер вернул статус-код \(statusCode)."
-            case let .decoding(error):
-                return "Ошибка декодирования ответа: \(error.localizedDescription)"
+            case let .decoding(err):
+                return "Ошибка декодирования ответа: \(err)"
+            case let .decodingOther(err):
+                return "Ошибка при обработке ответа: \(err.localizedDescription)"
             }
         }
     }
+
+    // MARK: Core
 
     private let apiKey: String
     private let session: URLSession
@@ -1057,92 +1096,116 @@ struct NavigationAPIClient {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    init(apiKey: String, session: URLSession = .shared, configuration: Configuration = .production) {
+    init(
+        apiKey: String,
+        session: URLSession = .shared,
+        configuration: Configuration = .production
+    ) {
         self.apiKey = apiKey
         self.session = session
         self.configuration = configuration
 
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        self.encoder = encoder
+        let enc = JSONEncoder()
+        enc.keyEncodingStrategy = .convertToSnakeCase
+        enc.dateEncodingStrategy = .secondsSince1970
+        self.encoder = enc
 
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        self.decoder = decoder
+        let dec = JSONDecoder()
+        dec.keyDecodingStrategy = .convertFromSnakeCase
+        dec.dateDecodingStrategy = .secondsSince1970
+        self.decoder = dec
     }
 }
 
 // MARK: - Public API
 
 extension NavigationAPIClient {
+
+    /// POST /routing/7.0.0/global?key=...
     func buildRoute(_ request: RouteRequest) async throws -> RouteResponse {
-        let request = try makePOSTRequest(
-            baseURL: configuration.routingBaseURL,
-            path: "routing/7.0.0/global",
-            body: request
-        )
-        return try await send(request, decode: RouteResponse.self)
+        let url = try url(base: configuration.routingBaseURL, pathComponents: ["routing", "7.0.0", "global"], key: apiKey)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.httpBody = try encoder.encode(request)
+        return try await send(req, decode: RouteResponse.self)
     }
 
+    /// POST /map_matching/1.0.0?key=...
     func mapMatch(_ request: MapMatchRequest) async throws -> MapMatchResponse {
-        let request = try makePOSTRequest(
-            baseURL: configuration.routingBaseURL,
-            path: "map_matching/1.0.0",
-            body: request
-        )
-        return try await send(request, decode: MapMatchResponse.self)
+        let url = try url(base: configuration.routingBaseURL, pathComponents: ["map_matching", "1.0.0"], key: apiKey)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.httpBody = try encoder.encode(request)
+        return try await send(req, decode: MapMatchResponse.self)
     }
 
+    /// POST /v2/geolocation?key=...
     func geolocate(_ request: GeolocationRequest) async throws -> GeolocationResponse {
-        let request = try makePOSTRequest(
-            baseURL: configuration.radarBaseURL,
-            path: "v2/geolocation",
-            body: request
-        )
-        return try await send(request, decode: GeolocationResponse.self)
+        let url = try url(base: configuration.radarBaseURL, pathComponents: ["v2", "geolocation"], key: apiKey)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.httpBody = try encoder.encode(request)
+        return try await send(req, decode: GeolocationResponse.self)
     }
 }
 
 // MARK: - Request helpers
 
 private extension NavigationAPIClient {
-    func makePOSTRequest<T: Encodable>(baseURL: URL, path: String, body: T) throws -> URLRequest {
-        let url = baseURL.appendingPathComponent(path)
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+
+    /// Собирает URL из базового домена + path components, добавляет `key` как query item.
+    func url(base: URL, pathComponents: [String], key: String) throws -> URL {
+        var url = base
+        for p in pathComponents {
+            url.appendPathComponent(p)
+        }
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             throw APIError.invalidURL
         }
-
-        var queryItems = components.queryItems ?? []
-        queryItems.append(URLQueryItem(name: "key", value: apiKey))
-        components.queryItems = queryItems
-
-        guard let finalURL = components.url else {
-            throw APIError.invalidURL
-        }
-
-        var request = URLRequest(url: finalURL)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.httpBody = try encoder.encode(body)
-        return request
+        var q: [URLQueryItem] = comps.queryItems ?? []
+        q.append(URLQueryItem(name: "key", value: key))
+        comps.queryItems = q
+        guard let final = comps.url else { throw APIError.invalidURL }
+        return final
     }
 
     func send<Response: Decodable>(_ request: URLRequest, decode type: Response.Type) async throws -> Response {
+        #if DEBUG
+        debugPrint("➡️ \(request.httpMethod ?? "GET") \(request.url?.absoluteString ?? "")")
+        if let body = request.httpBody, let s = String(data: body, encoding: .utf8) {
+            debugPrint("➡️ Body:\n\(s)")
+        }
+        #endif
+
         let (data, response) = try await session.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse else {
+        guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidURL
         }
 
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            throw APIError.httpError(statusCode: httpResponse.statusCode, body: data)
+        #if DEBUG
+        debugPrint("⬅️ Status: \(http.statusCode)")
+        if let s = String(data: data, encoding: .utf8) {
+            debugPrint("⬅️ Raw JSON (\(data.count) bytes):\n\(s)")
+        }
+        #endif
+
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.httpError(statusCode: http.statusCode, body: data)
         }
 
         do {
             return try decoder.decode(Response.self, from: data)
+        } catch let decErr as DecodingError {
+            throw APIError.decoding(decErr)
         } catch {
-            throw APIError.decoding(error)
+            throw APIError.decodingOther(error)
         }
     }
 }
@@ -1150,26 +1213,34 @@ private extension NavigationAPIClient {
 // MARK: - Routing models
 
 struct RouteRequest: Encodable {
-    enum Output: String, Codable {
-        case summary
-        case detailed
-    }
+    enum Output: String, Codable { case summary, detailed }
 
     var points: [RoutePoint]
-    var transport: String?
-    var filters: [String]?
-    var output: Output?
-    var locale: String?
-    var avoid: [String]?
+    var transport: String?           // "driving", "walking", "bicycle", "scooter", "motorcycle", "truck", "taxi"
+    var filters: [String]?           // e.g. ["dirt_road","toll_road","ferry"]
+    var output: Output?              // summary | detailed (default detailed)
+    var locale: String?              // "en", "ru", ...
+    var avoid: [String]?             // area/road types to avoid
+
+    init(
+        points: [RoutePoint],
+        transport: String? = nil,
+        filters: [String]? = nil,
+        output: Output? = .detailed,
+        locale: String? = nil,
+        avoid: [String]? = nil
+    ) {
+        self.points = points
+        self.transport = transport
+        self.filters = filters
+        self.output = output
+        self.locale = locale
+        self.avoid = avoid
+    }
 }
 
 struct RoutePoint: Codable {
-    enum PointType: String, Codable {
-        case walking
-        case stop
-        case pref
-    }
-
+    enum PointType: String, Codable { case walking, stop, pref }
     var lon: Double
     var lat: Double
     var type: PointType
@@ -1185,7 +1256,8 @@ struct RoutePoint: Codable {
 
 struct RouteResponse: Decodable {
     let message: String?
-    let result: [RouteResult]
+    let query: [String: JSONValue]?   // сервер может эхо-возвращать запрос
+    let result: [RouteResult]?        // делаем optional: иногда сервис возвращает только message
 }
 
 struct RouteResult: Decodable {
@@ -1210,18 +1282,23 @@ struct Maneuver: Decodable {
 }
 
 struct SegmentGeometry: Decodable, Identifiable {
-    enum CodingKeys: String, CodingKey { case color, length, selection, style }
     let id = UUID()
     let color: String?
     let length: Double?
-    let selection: String?
+    let selection: String?   // WKT LINESTRING
     let style: String?
+
+    private enum CodingKeys: String, CodingKey { case color, length, selection, style }
 }
 
 // MARK: - Map matching models
 
 struct MapMatchRequest: Encodable {
     var query: [RecordedPoint]
+
+    init(query: [RecordedPoint]) {
+        self.query = query
+    }
 }
 
 struct RecordedPoint: Codable {
@@ -1230,6 +1307,14 @@ struct RecordedPoint: Codable {
     var utc: Int
     var speed: Double?
     var azimuth: Double?
+
+    init(lon: Double, lat: Double, utc: Int, speed: Double? = nil, azimuth: Double? = nil) {
+        self.lon = lon
+        self.lat = lat
+        self.utc = utc
+        self.speed = speed
+        self.azimuth = azimuth
+    }
 }
 
 struct MapMatchResponse: Decodable {
@@ -1310,9 +1395,32 @@ struct GeolocationResponse: Decodable {
     }
 }
 
+// MARK: - JSONValue (для произвольных кусочков JSON)
+
+/// Универсальный JSON узел (null/bool/number/string/array/object)
+enum JSONValue: Decodable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([JSONValue])
+    case object([String: JSONValue])
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null; return }
+        if let b = try? container.decode(Bool.self) { self = .bool(b); return }
+        if let d = try? container.decode(Double.self) { self = .number(d); return }
+        if let s = try? container.decode(String.self) { self = .string(s); return }
+        if let arr = try? container.decode([JSONValue].self) { self = .array(arr); return }
+        if let obj = try? container.decode([String: JSONValue].self) { self = .object(obj); return }
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON type")
+    }
+}
+
 ################################################################################
 FILE: NavigationViewModel.swift
-SIZE: 3254 bytes
+SIZE: 3506 bytes
 
 ################################################################################
 import Foundation
@@ -1333,15 +1441,21 @@ class NavigationViewModel {
         self.client = client
     }
 
-    func loadSampleRoute() async {
+    func loadSampleRoute(locationService: LocationService, destinationPoint: RoutePoint) async {
         await execute {
+            let currentLocation = locationService.currentLocation;
+            
+            
+            if (currentLocation == nil) {
+                debugPrint("Use mock instead")
+            }
+            
             let request = RouteRequest(
                 points: [
-                    RoutePoint(lon: 37.582591, lat: 55.775364, type: .stop),
-                    RoutePoint(lon: 37.656625, lat: 55.765036, type: .stop)
+                    RoutePoint(lon: currentLocation?.coordinate.longitude ?? 104.798401, lat: currentLocation?.coordinate.latitude ?? 51.877124, type: .stop),
+                    destinationPoint
                 ],
-                transport: "driving",
-                filters: ["dirt_road", "toll_road", "ferry"],
+                transport: "walking",
                 output: .detailed,
                 locale: "ru"
             )
@@ -1396,6 +1510,160 @@ class NavigationViewModel {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
         isLoading = false
+    }
+}
+
+################################################################################
+FILE: PlacesClient.swift
+SIZE: 5475 bytes
+
+################################################################################
+//
+//  PlacesClient.swift
+//  2gis
+//
+//  Created by Павел on 05.10.2025.
+//
+
+import Foundation
+
+public struct DGisPlacesClient {
+    public struct Config {
+        public var apiKey: String
+        public var baseURL: URL
+        public init(apiKey: String,
+                    baseURL: URL = URL(string: "https://catalog.api.2gis.com/3.0")!) {
+            self.apiKey = apiKey
+            self.baseURL = baseURL
+        }
+    }
+
+    public enum ClientError: Error, LocalizedError {
+        case invalidURL
+        case http(Int)
+        case emptyResult
+        public var errorDescription: String? {
+            switch self {
+            case .invalidURL: return "Invalid URL"
+            case .http(let code): return "HTTP error \(code)"
+            case .emptyResult: return "No items found"
+            }
+        }
+    }
+
+    public struct Point: Decodable {
+        public let lon: Double?
+        public let lat: Double?
+    }
+
+    public struct PlaceItem: Decodable {
+        public let id: String
+        public let name: String
+        public let addressName: String?
+        public let point: Point?
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name, point
+            case addressName = "address_name"
+        }
+    }
+
+    public struct Meta: Decodable {
+        public let code: Int?
+        public let total: Int?
+        public let page: Int?
+        public let pageSize: Int?
+
+        private enum CodingKeys: String, CodingKey {
+            case code, total, page
+            case pageSize = "page_size"
+        }
+    }
+
+    public struct PlacesResultBlock: Decodable {
+        public let items: [PlaceItem]?
+    }
+
+    public struct PlacesResponse: Decodable {
+        public let meta: Meta?
+        public let result: PlacesResultBlock?
+    }
+
+    private let config: Config
+    private let session: URLSession
+
+    public init(config: Config, session: URLSession = .shared) {
+        self.config = config
+        self.session = session
+    }
+
+    /// Поиск мест по названию. Рекомендуется указывать город в тексте запроса (например, "Moscow cafe") для более точного результата. 2GIS также поддерживает пагинацию `page`/`page_size` и список полей `fields`.
+    /// Документация: /3.0/items?q=...&key=... (+ page, page_size, fields)
+    /// - Parameters:
+    ///   - name: Текст запроса (например, "Coffee Like" или "Moscow cafe").
+    ///   - cityHint: Необязательная подсказка города; будет добавлена к запросу (см. рекомендации 2GIS).
+    ///   - page: Номер страницы (по умолчанию 1).
+    ///   - pageSize: Размер страницы (1...50).
+    ///   - fields: Дополнительные поля, например: ["items.point","items.address_name"].
+    /// - Returns: Распарсенный ответ с метаданными и списком найденных объектов.
+    public func searchPlacesByName(
+        _ name: String,
+        cityHint: String? = nil,
+        page: Int = 1,
+        pageSize: Int = 12,
+        fields: [String] = ["items.point","items.address_name"]
+    ) async throws -> PlacesResponse {
+        // Сборка q с учётом cityHint (по рекомендации 2GIS добавлять город в текст запроса).
+        // См. пример: `q=Moscow cafe&type=branch&key=...`
+        let q: String = {
+            if let city = cityHint?.trimmingCharacters(in: .whitespacesAndNewlines), !city.isEmpty {
+                return "\(city) \(name)"
+            } else {
+                return name
+            }
+        }()
+
+        var comps = URLComponents(url: config.baseURL.appendingPathComponent("items"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [
+            URLQueryItem(name: "q", value: q),
+            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "page_size", value: String(pageSize)),
+            URLQueryItem(name: "key", value: config.apiKey)
+        ]
+
+        if !fields.isEmpty {
+            comps?.queryItems?.append(URLQueryItem(name: "fields", value: fields.joined(separator: ",")))
+        }
+
+        guard let url = comps?.url else { throw ClientError.invalidURL }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+
+        let (data, resp) = try await session.data(for: req)
+        if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw ClientError.http(http.statusCode)
+        }
+
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .useDefaultKeys
+
+        let dto = try decoder.decode(PlacesResponse.self, from: data)
+        return dto
+    }
+
+    /// Удобный хелпер: вернуть лучший (первый) матч, иначе ошибка.
+    public func bestMatch(
+        _ name: String,
+        cityHint: String? = nil,
+        fields: [String] = ["items.point","items.address_name"]
+    ) async throws -> PlaceItem {
+        let response = try await searchPlacesByName(name, cityHint: cityHint, page: 1, pageSize: 1, fields: fields)
+        if let first = response.result?.items?.first {
+            return first
+        } else {
+            throw ClientError.emptyResult
+        }
     }
 }
 
@@ -1465,7 +1733,7 @@ struct ToggleImmersiveSpaceButton: View {
 
 ################################################################################
 FILE: _gisApp.swift
-SIZE: 2082 bytes
+SIZE: 1127 bytes
 
 ################################################################################
 // _gisApp.swift
@@ -1487,44 +1755,23 @@ struct _gisApp: App {
         .defaultSize(CGSize(width: 900, height: 800))
 
         // Окна со стрелкой (три отдельных экземпляра)
-        WindowGroup(id: "ArrowWindow1") {
-            ArrowWindow(index: 1)
-                .environment(appModel)
-        }
-        .defaultSize(CGSize(width: 640, height: 320))
+        // WindowGroup(id: "ArrowWindow1") {
+        //     ArrowWindow(index: 1)
+        //         .environment(appModel)
+        // }
+        // .defaultSize(CGSize(width: 640, height: 320))
 
-        WindowGroup(id: "ArrowWindow2") {
-            ArrowWindow(index: 2)
-                .environment(appModel)
-        }
-        .defaultSize(CGSize(width: 640, height: 320))
+        // WindowGroup(id: "ArrowWindow2") {
+        //     ArrowWindow(index: 2)
+        //         .environment(appModel)
+        // }
+        // .defaultSize(CGSize(width: 640, height: 320))
 
-        WindowGroup(id: "ArrowWindow3") {
-            ArrowWindow(index: 3)
-                .environment(appModel)
-        }
-        .defaultSize(CGSize(width: 640, height: 320))
-
-        // Иммерсивная сцена
-        ImmersiveSpace(id: appModel.immersiveSpaceID) {
-            ImmersiveView()
-                .environment(appModel)
-                // ✅ Здесь .onAppear работает, потому что это View
-                .onAppear {
-                    immersionStyle = (appModel.selectedScene == .arrow) ? .mixed : .full
-                }
-                // ✅ Здесь тоже можно следить за изменением сцены
-                .onChange(of: appModel.selectedScene) { _, newValue in
-                    switch newValue {
-                    case .arrow:
-                        immersionStyle = .mixed
-                    case .cube:
-                        immersionStyle = .full
-                    }
-                }
-        }
-        // ✅ Модификатор применяется к ImmersiveSpace (Scene) корректно
-        .immersionStyle(selection: $immersionStyle, in: .mixed, .full)
+        // WindowGroup(id: "ArrowWindow3") {
+        //     ArrowWindow(index: 3)
+        //         .environment(appModel)
+        // }
+        // .defaultSize(CGSize(width: 640, height: 320))
     }
 }
 
