@@ -20,6 +20,8 @@ class AppModel {
     // Текущее положение пользователя и прогресс по маршруту (в метрах)
     var userLonLat: (lon: Double, lat: Double)?
     var userAlongMeters: Double = 0
+    // Подсказка поворота (эмоджи + текст)
+    var userTurnHint: String = ""
     // чтобы не открывать дубликаты окон
     var openedBillboardNodeIDs: Set<UUID> = []
 }

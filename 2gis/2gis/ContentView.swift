@@ -75,6 +75,8 @@ struct ContentView: View {
         }
         .onAppear {
             locationService.distanceThresholdMeters = 1.0
+            // Включаем мок-геопозицию из GPX и запускаем
+            locationService.enableMockFromBundledGPX(named: "xcode_route_2mps")
             locationService.start()
             navigationViewModel.startContinuousPositionCheck(locationService: locationService)
         }
@@ -84,7 +86,8 @@ struct ContentView: View {
             lonText = String(format: "%.6f", loc.coordinate.longitude)
             latText = String(format: "%.6f", loc.coordinate.latitude)
 
-            // Обновим координаты пользователя в модели для оверлея
+            // Сохраним предыдущую позицию и обновим текущую
+            let prevUser = appModel.userLonLat
             appModel.userLonLat = (lon: loc.coordinate.longitude, lat: loc.coordinate.latitude)
 
             if locationService.checkAndSnapIfNeeded() {
@@ -106,6 +109,38 @@ struct ContentView: View {
                 )
                 appModel.userAlongMeters = along
 
+                // Подсказка поворота: сравним вектор движения пользователя и тангенс маршрута в точке проекции
+                if let prev = prevUser {
+                    if let origin = appModel.routeOriginLonLat {
+                        let hint = computeTurnHint(
+                            prev: prev,
+                            curr: (lon: loc.coordinate.longitude, lat: loc.coordinate.latitude),
+                            origin: origin,
+                            polyline: appModel.routePolyline,
+                            along: along
+                        )
+                        appModel.userTurnHint = hint
+                    }
+                } else {
+                    appModel.userTurnHint = ""
+                }
+
+                // Очистка устаревших билбордов (сильно позади пользователя)
+                let keepFrom = max(0.0, along - 5.0) // небольшой гистерезис 5 м
+                if let firstIdx = appModel.generatedBillboards.firstIndex(where: { $0.alongMeters >= keepFrom }) {
+                    if firstIdx > 0 { appModel.generatedBillboards.removeFirst(firstIdx) }
+                } else {
+                    appModel.generatedBillboards.removeAll()
+                }
+                // Закрыть окна, которые ссылаются на уже удалённые билборды
+                let existingIDs = Set(appModel.generatedBillboards.map { $0.id })
+                let orphanIDs = appModel.openedBillboardNodeIDs.subtracting(existingIDs)
+                for id in orphanIDs {
+                    let placeholder = ManeuverNode(id: id, lon: 0, lat: 0, title: "⬆︎", detail: nil)
+                    dismissWindow(id: "SignpostWindow", value: placeholder)
+                    appModel.openedBillboardNodeIDs.remove(id)
+                }
+
                 // Берём как минимум 3 ближайших впереди
                 let upcoming = appModel.generatedBillboards.filter { $0.alongMeters + 0.1 >= along }
                 let desired = Array(upcoming.prefix(3))
@@ -118,6 +153,10 @@ struct ContentView: View {
                     if let b = appModel.generatedBillboards.first(where: { $0.id == id }) {
                         let node = ManeuverNode(id: b.id, lon: b.lon, lat: b.lat, title: "⬆︎", detail: nil)
                         dismissWindow(id: "SignpostWindow", value: node)
+                    } else {
+                        // если уже нет в массиве — закроем по плейсхолдеру с тем же id
+                        let placeholder = ManeuverNode(id: id, lon: 0, lat: 0, title: "⬆︎", detail: nil)
+                        dismissWindow(id: "SignpostWindow", value: placeholder)
                     }
                     appModel.openedBillboardNodeIDs.remove(id)
                 }
@@ -217,6 +256,10 @@ struct ContentView: View {
                                 loc.horizontalAccuracy))
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                    if !appModel.userTurnHint.isEmpty {
+                        Text(appModel.userTurnHint)
+                            .font(.callout)
+                    }
                 } else {
                     Text("Ожидание данных…").foregroundStyle(.secondary)
                 }
@@ -405,6 +448,7 @@ struct RouteOverlayPanel: View {
     let generated: [GeneratedBillboard]
     let user: (lon: Double, lat: Double)?
     let userAlong: Double
+    @Environment(AppModel.self) private var appModel
 
     private let panelHeight: CGFloat = 240
 
@@ -486,8 +530,11 @@ struct RouteOverlayPanel: View {
                     let r: CGFloat = 5
                     let rect = CGRect(x: pu.x - r, y: pu.y - r, width: r*2, height: r*2)
                     ctx.stroke(Path(ellipseIn: rect), with: .color(.yellow), lineWidth: 2)
-                    let label = String(format: "%.5f, %.5f", user.lat, user.lon)
-                    ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.yellow), at: CGPoint(x: pu.x, y: pu.y + 12))
+                    let coordLabel = String(format: "%.5f, %.5f", user.lat, user.lon)
+                    ctx.draw(Text(coordLabel).font(.system(size: 9)).foregroundStyle(.yellow), at: CGPoint(x: pu.x, y: pu.y + 12))
+                    if !appModel.userTurnHint.isEmpty {
+                        ctx.draw(Text(appModel.userTurnHint).font(.system(size: 11).bold()), at: CGPoint(x: pu.x, y: pu.y - 18))
+                    }
                 }
             }
             .frame(height: panelHeight)
@@ -634,4 +681,63 @@ private extension SIMD2 where Scalar == Double {
     static func &- (lhs: SIMD2<Double>, rhs: SIMD2<Double>) -> SIMD2<Double> { .init(lhs.x - rhs.x, lhs.y - rhs.y) }
     static func &+ (lhs: SIMD2<Double>, rhs: SIMD2<Double>) -> SIMD2<Double> { .init(lhs.x + rhs.x, lhs.y + rhs.y) }
     static func * (lhs: SIMD2<Double>, rhs: Double) -> SIMD2<Double> { .init(lhs.x * rhs, lhs.y * rhs) }
+}
+
+// MARK: - Подсказка поворота пользователя
+
+private func computeTurnHint(
+    prev: (lon: Double, lat: Double),
+    curr: (lon: Double, lat: Double),
+    origin: (lon: Double, lat: Double),
+    polyline: RoutePolyline,
+    along: Double
+) -> String {
+    // Вектор движения пользователя
+    let p0 = Geo.geoToMeters(lon: prev.lon, lat: prev.lat, originLon: origin.lon, originLat: origin.lat)
+    let p1 = Geo.geoToMeters(lon: curr.lon, lat: curr.lat, originLon: origin.lon, originLat: origin.lat)
+    var vu = p1 &- p0
+    let vuLen = max(1e-6, distance(p1, p0))
+    vu = .init(vu.x / vuLen, vu.y / vuLen)
+
+    // Тангенс маршрута в точке проекции
+    let vr = routeTangentAtAlong(origin: origin, polyline: polyline, along: along)
+    let dotv = max(-1.0, min(1.0, vu.x*vr.x + vu.y*vr.y))
+    let angleRad = acos(dotv)
+    let angleDeg = angleRad * 180.0 / .pi
+    let crossZ = vu.x*vr.y - vu.y*vr.x // >0 — поворот влево, <0 — вправо
+
+    // Градации
+    if angleDeg < 10 {
+        return "⬆️ идите прямо"
+    } else if angleDeg < 45 {
+        return crossZ >= 0 ? "↖️ слегка поверните налево" : "↗️ слегка поверните направо"
+    } else if angleDeg <= 90 {
+        return crossZ >= 0 ? "↩️ поверните налево" : "↪️ поверните направо"
+    } else {
+        // если угол > 90°, вероятно идём в обратную сторону — дадим сильную подсказку
+        return crossZ >= 0 ? "⬅️ развернитесь налево" : "➡️ развернитесь направо"
+    }
+}
+
+private func routeTangentAtAlong(origin: (lon: Double, lat: Double), polyline: RoutePolyline, along: Double) -> SIMD2<Double> {
+    let meters: [SIMD2<Double>] = polyline.points.map {
+        Geo.geoToMeters(lon: $0.lon, lat: $0.lat, originLon: origin.lon, originLat: origin.lat)
+    }
+    guard meters.count >= 2 else { return .init(0, 1) }
+    var cum: [Double] = [0]
+    for i in 1..<meters.count { cum.append(cum.last! + distance(meters[i], meters[i-1])) }
+    let total = cum.last ?? 0
+    let d = min(max(0, along), total)
+    // бинарный поиск сегмента
+    var lo = 0, hi = cum.count - 1
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if cum[mid] < d { lo = mid + 1 } else { hi = mid }
+    }
+    let i = max(1, lo)
+    let a = meters[i-1], b = meters[i]
+    var v = b &- a
+    let len = max(1e-6, distance(b, a))
+    v = .init(v.x / len, v.y / len)
+    return v
 }
