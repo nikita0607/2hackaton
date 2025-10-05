@@ -11,6 +11,7 @@ import Observation
 struct ContentView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     @State private var navigationViewModel = NavigationViewModel()
     @State private var catalogViewModel = CatalogFlowViewModel()
@@ -55,7 +56,10 @@ struct ContentView: View {
                 RouteOverlayPanel(
                     origin: appModel.routeOriginLonLat,
                     polyline: appModel.routePolyline,
-                    nodes: appModel.maneuverNodes
+                    nodes: appModel.maneuverNodes,
+                    generated: appModel.generatedBillboards,
+                    user: appModel.userLonLat,
+                    userAlong: appModel.userAlongMeters
                 )
 
                 Divider()
@@ -72,11 +76,16 @@ struct ContentView: View {
         .onAppear {
             locationService.distanceThresholdMeters = 1.0
             locationService.start()
+            navigationViewModel.startContinuousPositionCheck(locationService: locationService)
         }
+        .onDisappear { navigationViewModel.stopContinuousPositionCheck() }
         .onChange(of: locationService.currentLocation) { _, newLoc in
             guard let loc = newLoc else { return }
             lonText = String(format: "%.6f", loc.coordinate.longitude)
             latText = String(format: "%.6f", loc.coordinate.latitude)
+
+            // Обновим координаты пользователя в модели для оверлея
+            appModel.userLonLat = (lon: loc.coordinate.longitude, lat: loc.coordinate.latitude)
 
             if locationService.checkAndSnapIfNeeded() {
                 Task {
@@ -86,6 +95,41 @@ struct ContentView: View {
                     )
                 }
             }
+
+            // Динамическое управление окнами-билбордами по мере продвижения
+            if let origin = appModel.routeOriginLonLat, !appModel.routePolyline.points.isEmpty, !appModel.generatedBillboards.isEmpty {
+                let along = projectAlongMeters(
+                    lon: loc.coordinate.longitude,
+                    lat: loc.coordinate.latitude,
+                    origin: origin,
+                    polyline: appModel.routePolyline
+                )
+                appModel.userAlongMeters = along
+
+                // Берём как минимум 3 ближайших впереди
+                let upcoming = appModel.generatedBillboards.filter { $0.alongMeters + 0.1 >= along }
+                let desired = Array(upcoming.prefix(3))
+                let desiredIDs = Set(desired.map { $0.id })
+
+                // Закрыть лишние окна
+                let toClose = appModel.openedBillboardNodeIDs.subtracting(desiredIDs)
+                for id in toClose {
+                    // найдём соответствующий борд
+                    if let b = appModel.generatedBillboards.first(where: { $0.id == id }) {
+                        let node = ManeuverNode(id: b.id, lon: b.lon, lat: b.lat, title: "⬆︎", detail: nil)
+                        dismissWindow(id: "SignpostWindow", value: node)
+                    }
+                    appModel.openedBillboardNodeIDs.remove(id)
+                }
+
+                // Открыть недостающие окна
+                for b in desired where !appModel.openedBillboardNodeIDs.contains(b.id) {
+                    let distanceLeft = max(0, Int((b.alongMeters - along).rounded()))
+                    let node = ManeuverNode(id: b.id, lon: b.lon, lat: b.lat, title: "⬆︎", detail: distanceLeft > 0 ? "через \(distanceLeft) м" : nil)
+                    openWindow(id: "SignpostWindow", value: node)
+                    appModel.openedBillboardNodeIDs.insert(b.id)
+                }
+            }
         }
         // ✅ БЕЗ Equatable: побочные действия при смене маршрута — через .task(id:)
         // SwiftUI перезапустит этот блок, когда поменяется routeToken (обычно = route.id).
@@ -93,6 +137,20 @@ struct ContentView: View {
             guard routeToken != "no-route",
                   routeToken != lastProcessedRouteToken,
                   let resp = navigationViewModel.lastRouteResponse else { return }
+
+            // Закрыть ранее открытые окна билбордов (смена маршрута)
+            if !appModel.openedBillboardNodeIDs.isEmpty {
+                let prevIds = appModel.openedBillboardNodeIDs
+                for id in prevIds {
+                    if let b = appModel.generatedBillboards.first(where: { $0.id == id }) {
+                        let node = ManeuverNode(id: b.id, lon: b.lon, lat: b.lat, title: "⬆︎", detail: nil)
+                        dismissWindow(id: "SignpostWindow", value: node)
+                    } else if let n = appModel.maneuverNodes.first(where: { $0.id == id }) {
+                        dismissWindow(id: "SignpostWindow", value: n)
+                    }
+                    appModel.openedBillboardNodeIDs.remove(id)
+                }
+            }
 
             // 1) Origin — фиксируем на момент построения маршрута
             if let loc = locationService.currentLocation {
@@ -121,11 +179,23 @@ struct ContentView: View {
             appModel.maneuverNodes = nodes
             appModel.routePolyline = full
 
-            // 3) Автоподъём независимых окон-билбордов по всем узлам (ограничим число)
-            let maxWindows = 8
-            for node in nodes.prefix(maxWindows) where !appModel.openedBillboardNodeIDs.contains(node.id) {
-                openWindow(id: "SignpostWindow", value: node)
-                appModel.openedBillboardNodeIDs.insert(node.id)
+            // 3) Предгенерация билбордов каждые 10 метров вдоль полной полилинии
+            if let origin = appModel.routeOriginLonLat {
+                appModel.generatedBillboards = generateBillboardsEvery(
+                    spacingMeters: 10.0,
+                    origin: origin,
+                    polyline: full
+                )
+                // Обновим прогресс пользователя по новому маршруту, если знаем позицию
+                if let u = appModel.userLonLat {
+                    appModel.userAlongMeters = projectAlongMeters(
+                        lon: u.lon, lat: u.lat, origin: origin, polyline: full
+                    )
+                } else {
+                    appModel.userAlongMeters = 0
+                }
+            } else {
+                appModel.generatedBillboards = []
             }
 
             lastProcessedRouteToken = routeToken
@@ -332,6 +402,9 @@ struct RouteOverlayPanel: View {
     let origin: (lon: Double, lat: Double)?
     let polyline: RoutePolyline
     let nodes: [ManeuverNode]
+    let generated: [GeneratedBillboard]
+    let user: (lon: Double, lat: Double)?
+    let userAlong: Double
 
     private let panelHeight: CGFloat = 240
 
@@ -382,6 +455,40 @@ struct RouteOverlayPanel: View {
                     ctx.fill(Path(ellipseIn: rect),
                              with: .color(i == 0 ? .green : (i == nodes.count-1 ? .red : .cyan)))
                 }
+
+                // 5) Все сгенерированные билборды (светло-оранжевые точки)
+                for b in generated {
+                    let p2 = Geo.geoToMeters(lon: b.lon, lat: b.lat,
+                                             originLon: origin.lon, originLat: origin.lat)
+                    let p = mapPoint(p2)
+                    let r: CGFloat = 2
+                    let rect = CGRect(x: p.x - r, y: p.y - r, width: r*2, height: r*2)
+                    ctx.fill(Path(ellipseIn: rect), with: .color(.orange.opacity(0.6)))
+                }
+
+                // 6) Ближайшие 3 впереди — выделим ярче и подпишем дистанцию
+                let ahead = generated.filter { $0.alongMeters + 0.1 >= userAlong }.prefix(3)
+                for b in ahead {
+                    let p2 = Geo.geoToMeters(lon: b.lon, lat: b.lat,
+                                             originLon: origin.lon, originLat: origin.lat)
+                    let p = mapPoint(p2)
+                    let r: CGFloat = 4
+                    let rect = CGRect(x: p.x - r, y: p.y - r, width: r*2, height: r*2)
+                    ctx.fill(Path(ellipseIn: rect), with: .color(.orange))
+                    let left = max(0, Int((b.alongMeters - userAlong).rounded()))
+                    ctx.draw(Text("\(left)m").font(.system(size: 9)).foregroundStyle(.orange), at: CGPoint(x: p.x, y: p.y - 10))
+                }
+
+                // 7) Позиция пользователя
+                if let user {
+                    let pu2 = Geo.geoToMeters(lon: user.lon, lat: user.lat, originLon: origin.lon, originLat: origin.lat)
+                    let pu = mapPoint(pu2)
+                    let r: CGFloat = 5
+                    let rect = CGRect(x: pu.x - r, y: pu.y - r, width: r*2, height: r*2)
+                    ctx.stroke(Path(ellipseIn: rect), with: .color(.yellow), lineWidth: 2)
+                    let label = String(format: "%.5f, %.5f", user.lat, user.lon)
+                    ctx.draw(Text(label).font(.system(size: 9)).foregroundStyle(.yellow), at: CGPoint(x: pu.x, y: pu.y + 12))
+                }
             }
             .frame(height: panelHeight)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -427,4 +534,104 @@ private func extractFullPolyline(from response: RouteResponse) -> RoutePolyline 
         }
     }
     return .init(points: all)
+}
+
+// MARK: - Генерация билбордов каждые N метров
+
+private func generateBillboardsEvery(spacingMeters: Double,
+                                     origin: (lon: Double, lat: Double),
+                                     polyline: RoutePolyline) -> [GeneratedBillboard] {
+    guard polyline.points.count >= 2 else { return [] }
+
+    let meters: [SIMD2<Double>] = polyline.points.map {
+        Geo.geoToMeters(lon: $0.lon, lat: $0.lat, originLon: origin.lon, originLat: origin.lat)
+    }
+
+    // сегменты и накопленные длины
+    var cum: [Double] = [0]
+    for i in 1..<meters.count {
+        let dl = distance(meters[i], meters[i-1])
+        cum.append(cum.last! + dl)
+    }
+    let total = cum.last ?? 0
+    guard total > 0 else { return [] }
+
+    func point(atAlong d: Double) -> SIMD2<Double> {
+        if d <= 0 { return meters.first! }
+        if d >= total { return meters.last! }
+        // бинарный поиск сегмента
+        var lo = 0, hi = cum.count - 1
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if cum[mid] < d { lo = mid + 1 } else { hi = mid }
+        }
+        let i = max(1, lo)
+        let segStart = meters[i-1]
+        let segEnd = meters[i]
+        let segLen = max(distance(segEnd, segStart), 1e-6)
+        let t = (d - cum[i-1]) / segLen
+        return mix(segStart, segEnd, t)
+    }
+
+    var out: [GeneratedBillboard] = []
+    var d = 0.0
+    while d <= total {
+        let p = point(atAlong: d)
+        let geo = Geo.metersToGeo(dx: p.x, dz: p.y, originLon: origin.lon, originLat: origin.lat)
+        out.append(GeneratedBillboard(lon: geo.lon, lat: geo.lat, alongMeters: d))
+        d += spacingMeters
+    }
+    return out
+}
+
+// MARK: - Вспомогательные векторы
+
+@inline(__always) private func distance(_ a: SIMD2<Double>, _ b: SIMD2<Double>) -> Double {
+    let dx = a.x - b.x, dy = a.y - b.y
+    return (dx*dx + dy*dy).squareRoot()
+}
+
+@inline(__always) private func mix(_ a: SIMD2<Double>, _ b: SIMD2<Double>, _ t: Double) -> SIMD2<Double> {
+    return .init(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
+}
+
+// MARK: - Проекция текущей позиции на полилинию → прогресс (метры)
+
+private func projectAlongMeters(lon: Double,
+                                lat: Double,
+                                origin: (lon: Double, lat: Double),
+                                polyline: RoutePolyline) -> Double {
+    let pts = polyline.points
+    guard pts.count >= 2 else { return 0 }
+    let meters: [SIMD2<Double>] = pts.map {
+        Geo.geoToMeters(lon: $0.lon, lat: $0.lat, originLon: origin.lon, originLat: origin.lat)
+    }
+    var cum: [Double] = [0]
+    for i in 1..<meters.count { cum.append(cum.last! + distance(meters[i], meters[i-1])) }
+    let p = Geo.geoToMeters(lon: lon, lat: lat, originLon: origin.lon, originLat: origin.lat)
+
+    var bestDist = Double.greatestFiniteMagnitude
+    var bestAlong = 0.0
+    for i in 1..<meters.count {
+        let a = meters[i-1], b = meters[i]
+        let ab = b &- a
+        let ap = p &- a
+        let abLen2 = max(ab.x*ab.x + ab.y*ab.y, 1e-12)
+        var t = (ap.x*ab.x + ap.y*ab.y) / abLen2
+        t = max(0, min(1, t))
+        let proj = a &+ (b &- a) * t
+        let d2 = (proj.x - p.x)*(proj.x - p.x) + (proj.y - p.y)*(proj.y - p.y)
+        if d2 < bestDist {
+            bestDist = d2
+            let segLen = distance(b, a)
+            bestAlong = cum[i-1] + segLen * t
+        }
+    }
+    return bestAlong
+}
+
+private extension SIMD2 where Scalar == Double {
+    static func &- (lhs: SIMD2<Double>, rhs: SIMD2<Double>) -> SIMD2<Double> { .init(lhs.x - rhs.x, lhs.y - rhs.y) }
+    static func &+ (lhs: SIMD2<Double>, rhs: SIMD2<Double>) -> SIMD2<Double> { .init(lhs.x + rhs.x, lhs.y + rhs.y) }
+    static func * (lhs: SIMD2<Double>, rhs: Double) -> SIMD2<Double> { .init(lhs.x * rhs, lhs.y * rhs) }
 }

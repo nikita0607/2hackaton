@@ -16,6 +16,10 @@ class AppModel {
     var routeOriginLonLat: (lon: Double, lat: Double)?
     var maneuverNodes: [ManeuverNode] = []
     var routePolyline: RoutePolyline = .init(points: [])
+    var generatedBillboards: [GeneratedBillboard] = []
+    // Текущее положение пользователя и прогресс по маршруту (в метрах)
+    var userLonLat: (lon: Double, lat: Double)?
+    var userAlongMeters: Double = 0
     // чтобы не открывать дубликаты окон
     var openedBillboardNodeIDs: Set<UUID> = []
 }

@@ -12,6 +12,13 @@ class NavigationViewModel {
     var lastGeolocationResponse: GeolocationResponse?
     var errorMessage: String?
 
+    // Постоянная проверка позиции (map matching)
+    private var positionMonitorTask: Task<Void, Never>?
+    private var recordedPoints: [RecordedPoint] = []
+    private var lastMapMatchSentAt: Date?
+    private let minMapMatchInterval: TimeInterval = 2.0
+    private let maxRecordedPoints: Int = 30
+
     init(client: NavigationAPIClient = NavigationAPIClient(apiKey: "6fe4cc7a-89b8-4aec-a5c3-ac94224044fe")) {
         self.client = client
     }
@@ -35,6 +42,61 @@ class NavigationViewModel {
                 locale: "ru"
             )
             lastRouteResponse = try await client.buildRoute(request)
+        }
+    }
+
+    func startContinuousPositionCheck(locationService: LocationService) {
+        // перезапуск, если уже был запущен
+        positionMonitorTask?.cancel()
+        positionMonitorTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                await self.captureAndSendIfNeeded(locationService: locationService)
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // ~1 сек
+            }
+        }
+    }
+
+    func stopContinuousPositionCheck() {
+        positionMonitorTask?.cancel()
+        positionMonitorTask = nil
+    }
+
+    private func captureAndSendIfNeeded(locationService: LocationService) async {
+        guard let loc = locationService.currentLocation else { return }
+        let now = Int(Date().timeIntervalSince1970)
+        let point = RecordedPoint(
+            lon: loc.coordinate.longitude,
+            lat: loc.coordinate.latitude,
+            utc: now,
+            speed: max(loc.speed, 0),
+            azimuth: loc.course >= 0 ? loc.course : nil
+        )
+
+        // добавим и ограничим буфер
+        recordedPoints.append(point)
+        if recordedPoints.count > maxRecordedPoints { recordedPoints.removeFirst(recordedPoints.count - maxRecordedPoints) }
+
+        // Троттлинг запросов map match
+        let shouldSend: Bool = {
+            if recordedPoints.count < 2 { return false }
+            if let lastAt = lastMapMatchSentAt, Date().timeIntervalSince(lastAt) < minMapMatchInterval { return false }
+            return true
+        }()
+        guard shouldSend else { return }
+
+        let req = MapMatchRequest(query: recordedPoints)
+        do {
+            let resp = try await client.mapMatch(req)
+            // обновим на главном потоке
+            await MainActor.run {
+                self.lastMapMatchResponse = resp
+                self.lastMapMatchSentAt = Date()
+            }
+        } catch {
+            await MainActor.run {
+                self.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
         }
     }
 

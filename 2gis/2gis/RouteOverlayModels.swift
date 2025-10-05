@@ -44,6 +44,12 @@ public enum Geo {
         let dz = (lat - originLat) * metersPerDeg
         return .init(dx, dz)
     }
+
+    public static func metersToGeo(dx: Double, dz: Double, originLon: Double, originLat: Double) -> (lon: Double, lat: Double) {
+        let dLon = dx / (cos(originLat * .pi / 180.0) * metersPerDeg)
+        let dLat = dz / metersPerDeg
+        return (originLon + dLon, originLat + dLat)
+    }
 }
 
 public enum WKT {
@@ -61,5 +67,20 @@ public enum WKT {
             guard comps.count >= 2, let lon = Double(comps[0]), let lat = Double(comps[1]) else { return nil }
             return (lon, lat)
         }
+    }
+}
+
+// Сэмплы вдоль маршрута с привязкой к длине (в метрах)
+public struct GeneratedBillboard: Identifiable, Codable, Hashable, Sendable {
+    public let id: UUID
+    public let lon: Double
+    public let lat: Double
+    public let alongMeters: Double
+
+    public init(id: UUID = UUID(), lon: Double, lat: Double, alongMeters: Double) {
+        self.id = id
+        self.lon = lon
+        self.lat = lat
+        self.alongMeters = alongMeters
     }
 }

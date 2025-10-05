@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Xcode">
+    <wpt lat="51.877124" lon="104.798400">
+        <name>Point 1</name>
+        <time>2025-10-05T12:00:00Z</time>
+    </wpt>
+    <wpt lat="51.877182" lon="104.798730">
+        <name>Point 2</name>
+        <time>2025-10-05T12:00:11Z</time>
+    </wpt>
+    <wpt lat="51.877136" lon="104.798750">
+        <name>Point 3</name>
+        <time>2025-10-05T12:00:14Z</time>
+    </wpt>
+    <wpt lat="51.876957" lon="104.798720">
+        <name>Point 4</name>
+        <time>2025-10-05T12:00:24Z</time>
+    </wpt>
+    <wpt lat="51.876774" lon="104.798620">
+        <name>Point 5</name>
+        <time>2025-10-05T12:00:35Z</time>
+    </wpt>
+    <wpt lat="51.876612" lon="104.798430">
+        <name>Point 6</name>
+        <time>2025-10-05T12:00:46Z</time>
+    </wpt>
+    <wpt lat="51.876485" lon="104.798150">
+        <name>Point 7</name>
+        <time>2025-10-05T12:00:58Z</time>
+    </wpt>
+    <wpt lat="51.876423" lon="104.797910">
+        <name>Point 8</name>
+        <time>2025-10-05T12:01:07Z</time>
+    </wpt>
+    <wpt lat="51.876358" lon="104.797730">
+        <name>Point 9</name>
+        <time>2025-10-05T12:01:14Z</time>
+    </wpt>
+    <wpt lat="51.876281" lon="104.797570">
+        <name>Point 10</name>
+        <time>2025-10-05T12:01:21Z</time>
+    </wpt>
+    <wpt lat="51.875211" lon="104.796340">
+        <name>Point 11</name>
+        <time>2025-10-05T12:02:34Z</time>
+    </wpt>
+    <wpt lat="51.874970" lon="104.796890">
+        <name>Point 12</name>
+        <time>2025-10-05T12:02:57Z</time>
+    </wpt>
+    <wpt lat="51.874891" lon="104.796790">
+        <name>Point 13</name>
+        <time>2025-10-05T12:03:02Z</time>
+    </wpt>
+</gpx>
