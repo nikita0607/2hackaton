@@ -1,15 +1,18 @@
 import SwiftUI
 
 struct ArrowWindow: View {
+    let index: Int
+
     var body: some View {
         ArrowView()
             .padding(16)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-            .navigationTitle("Стрелка")
+            .navigationTitle("Стрелка #\(index)")
             .toolbar {
-                // опционально — небольшая подсказка
                 ToolbarItem(placement: .status) {
-                    Text("Окно со стрелкой").font(.footnote).foregroundStyle(.secondary)
+                    Text("Окно со стрелкой #\(index)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
     }

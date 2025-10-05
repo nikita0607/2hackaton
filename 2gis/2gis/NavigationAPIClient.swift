@@ -1,7 +1,13 @@
 import Foundation
+import CoreLocation
 
-/// Lightweight client for the 2GIS navigation-related APIs described in `openapi_navigation`.
+// MARK: - Navigation API Client
+
+/// Lightweight client for 2GIS navigation-related APIs (Routing, Map Matching, Radar).
 struct NavigationAPIClient {
+
+    // MARK: Configuration
+
     struct Configuration: Sendable {
         let routingBaseURL: URL
         let radarBaseURL: URL
@@ -12,10 +18,13 @@ struct NavigationAPIClient {
         )
     }
 
+    // MARK: Errors
+
     enum APIError: LocalizedError {
         case invalidURL
         case httpError(statusCode: Int, body: Data)
-        case decoding(Error)
+        case decoding(DecodingError)          // конкретно DecodingError (чтобы видеть, что именно не так)
+        case decodingOther(Error)             // на случай другой ошибки при decode()
 
         var errorDescription: String? {
             switch self {
@@ -23,11 +32,15 @@ struct NavigationAPIClient {
                 return "Не удалось собрать URL для запроса."
             case let .httpError(statusCode, _):
                 return "Сервер вернул статус-код \(statusCode)."
-            case let .decoding(error):
-                return "Ошибка декодирования ответа: \(error.localizedDescription)"
+            case let .decoding(err):
+                return "Ошибка декодирования ответа: \(err)"
+            case let .decodingOther(err):
+                return "Ошибка при обработке ответа: \(err.localizedDescription)"
             }
         }
     }
+
+    // MARK: Core
 
     private let apiKey: String
     private let session: URLSession
@@ -35,92 +48,116 @@ struct NavigationAPIClient {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    init(apiKey: String, session: URLSession = .shared, configuration: Configuration = .production) {
+    init(
+        apiKey: String,
+        session: URLSession = .shared,
+        configuration: Configuration = .production
+    ) {
         self.apiKey = apiKey
         self.session = session
         self.configuration = configuration
 
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        self.encoder = encoder
+        let enc = JSONEncoder()
+        enc.keyEncodingStrategy = .convertToSnakeCase
+        enc.dateEncodingStrategy = .secondsSince1970
+        self.encoder = enc
 
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        self.decoder = decoder
+        let dec = JSONDecoder()
+        dec.keyDecodingStrategy = .convertFromSnakeCase
+        dec.dateDecodingStrategy = .secondsSince1970
+        self.decoder = dec
     }
 }
 
 // MARK: - Public API
 
 extension NavigationAPIClient {
+
+    /// POST /routing/7.0.0/global?key=...
     func buildRoute(_ request: RouteRequest) async throws -> RouteResponse {
-        let request = try makePOSTRequest(
-            baseURL: configuration.routingBaseURL,
-            path: "routing/7.0.0/global",
-            body: request
-        )
-        return try await send(request, decode: RouteResponse.self)
+        let url = try url(base: configuration.routingBaseURL, pathComponents: ["routing", "7.0.0", "global"], key: apiKey)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.httpBody = try encoder.encode(request)
+        return try await send(req, decode: RouteResponse.self)
     }
 
+    /// POST /map_matching/1.0.0?key=...
     func mapMatch(_ request: MapMatchRequest) async throws -> MapMatchResponse {
-        let request = try makePOSTRequest(
-            baseURL: configuration.routingBaseURL,
-            path: "map_matching/1.0.0",
-            body: request
-        )
-        return try await send(request, decode: MapMatchResponse.self)
+        let url = try url(base: configuration.routingBaseURL, pathComponents: ["map_matching", "1.0.0"], key: apiKey)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.httpBody = try encoder.encode(request)
+        return try await send(req, decode: MapMatchResponse.self)
     }
 
+    /// POST /v2/geolocation?key=...
     func geolocate(_ request: GeolocationRequest) async throws -> GeolocationResponse {
-        let request = try makePOSTRequest(
-            baseURL: configuration.radarBaseURL,
-            path: "v2/geolocation",
-            body: request
-        )
-        return try await send(request, decode: GeolocationResponse.self)
+        let url = try url(base: configuration.radarBaseURL, pathComponents: ["v2", "geolocation"], key: apiKey)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.httpBody = try encoder.encode(request)
+        return try await send(req, decode: GeolocationResponse.self)
     }
 }
 
 // MARK: - Request helpers
 
 private extension NavigationAPIClient {
-    func makePOSTRequest<T: Encodable>(baseURL: URL, path: String, body: T) throws -> URLRequest {
-        let url = baseURL.appendingPathComponent(path)
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+
+    /// Собирает URL из базового домена + path components, добавляет `key` как query item.
+    func url(base: URL, pathComponents: [String], key: String) throws -> URL {
+        var url = base
+        for p in pathComponents {
+            url.appendPathComponent(p)
+        }
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             throw APIError.invalidURL
         }
-
-        var queryItems = components.queryItems ?? []
-        queryItems.append(URLQueryItem(name: "key", value: apiKey))
-        components.queryItems = queryItems
-
-        guard let finalURL = components.url else {
-            throw APIError.invalidURL
-        }
-
-        var request = URLRequest(url: finalURL)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.httpBody = try encoder.encode(body)
-        return request
+        var q: [URLQueryItem] = comps.queryItems ?? []
+        q.append(URLQueryItem(name: "key", value: key))
+        comps.queryItems = q
+        guard let final = comps.url else { throw APIError.invalidURL }
+        return final
     }
 
     func send<Response: Decodable>(_ request: URLRequest, decode type: Response.Type) async throws -> Response {
+        #if DEBUG
+        debugPrint("➡️ \(request.httpMethod ?? "GET") \(request.url?.absoluteString ?? "")")
+        if let body = request.httpBody, let s = String(data: body, encoding: .utf8) {
+            debugPrint("➡️ Body:\n\(s)")
+        }
+        #endif
+
         let (data, response) = try await session.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse else {
+        guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidURL
         }
 
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            throw APIError.httpError(statusCode: httpResponse.statusCode, body: data)
+        #if DEBUG
+        debugPrint("⬅️ Status: \(http.statusCode)")
+        if let s = String(data: data, encoding: .utf8) {
+            debugPrint("⬅️ Raw JSON (\(data.count) bytes):\n\(s)")
+        }
+        #endif
+
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.httpError(statusCode: http.statusCode, body: data)
         }
 
         do {
             return try decoder.decode(Response.self, from: data)
+        } catch let decErr as DecodingError {
+            throw APIError.decoding(decErr)
         } catch {
-            throw APIError.decoding(error)
+            throw APIError.decodingOther(error)
         }
     }
 }
@@ -128,26 +165,34 @@ private extension NavigationAPIClient {
 // MARK: - Routing models
 
 struct RouteRequest: Encodable {
-    enum Output: String, Codable {
-        case summary
-        case detailed
-    }
+    enum Output: String, Codable { case summary, detailed }
 
     var points: [RoutePoint]
-    var transport: String?
-    var filters: [String]?
-    var output: Output?
-    var locale: String?
-    var avoid: [String]?
+    var transport: String?           // "driving", "walking", "bicycle", "scooter", "motorcycle", "truck", "taxi"
+    var filters: [String]?           // e.g. ["dirt_road","toll_road","ferry"]
+    var output: Output?              // summary | detailed (default detailed)
+    var locale: String?              // "en", "ru", ...
+    var avoid: [String]?             // area/road types to avoid
+
+    init(
+        points: [RoutePoint],
+        transport: String? = nil,
+        filters: [String]? = nil,
+        output: Output? = .detailed,
+        locale: String? = nil,
+        avoid: [String]? = nil
+    ) {
+        self.points = points
+        self.transport = transport
+        self.filters = filters
+        self.output = output
+        self.locale = locale
+        self.avoid = avoid
+    }
 }
 
 struct RoutePoint: Codable {
-    enum PointType: String, Codable {
-        case walking
-        case stop
-        case pref
-    }
-
+    enum PointType: String, Codable { case walking, stop, pref }
     var lon: Double
     var lat: Double
     var type: PointType
@@ -163,7 +208,8 @@ struct RoutePoint: Codable {
 
 struct RouteResponse: Decodable {
     let message: String?
-    let result: [RouteResult]
+    let query: [String: JSONValue]?   // сервер может эхо-возвращать запрос
+    let result: [RouteResult]?        // делаем optional: иногда сервис возвращает только message
 }
 
 struct RouteResult: Decodable {
@@ -188,18 +234,23 @@ struct Maneuver: Decodable {
 }
 
 struct SegmentGeometry: Decodable, Identifiable {
-    enum CodingKeys: String, CodingKey { case color, length, selection, style }
     let id = UUID()
     let color: String?
     let length: Double?
-    let selection: String?
+    let selection: String?   // WKT LINESTRING
     let style: String?
+
+    private enum CodingKeys: String, CodingKey { case color, length, selection, style }
 }
 
 // MARK: - Map matching models
 
 struct MapMatchRequest: Encodable {
     var query: [RecordedPoint]
+
+    init(query: [RecordedPoint]) {
+        self.query = query
+    }
 }
 
 struct RecordedPoint: Codable {
@@ -208,6 +259,14 @@ struct RecordedPoint: Codable {
     var utc: Int
     var speed: Double?
     var azimuth: Double?
+
+    init(lon: Double, lat: Double, utc: Int, speed: Double? = nil, azimuth: Double? = nil) {
+        self.lon = lon
+        self.lat = lat
+        self.utc = utc
+        self.speed = speed
+        self.azimuth = azimuth
+    }
 }
 
 struct MapMatchResponse: Decodable {
@@ -285,5 +344,28 @@ struct GeolocationResponse: Decodable {
         let longitude: Double?
         let latitude: Double?
         let accuracy: Double?
+    }
+}
+
+// MARK: - JSONValue (для произвольных кусочков JSON)
+
+/// Универсальный JSON узел (null/bool/number/string/array/object)
+enum JSONValue: Decodable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([JSONValue])
+    case object([String: JSONValue])
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null; return }
+        if let b = try? container.decode(Bool.self) { self = .bool(b); return }
+        if let d = try? container.decode(Double.self) { self = .number(d); return }
+        if let s = try? container.decode(String.self) { self = .string(s); return }
+        if let arr = try? container.decode([JSONValue].self) { self = .array(arr); return }
+        if let obj = try? container.decode([String: JSONValue].self) { self = .object(obj); return }
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON type")
     }
 }

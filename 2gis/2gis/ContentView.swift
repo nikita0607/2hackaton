@@ -17,6 +17,10 @@ struct ContentView: View {
 
     @State private var navigationViewModel = NavigationViewModel()
     @State private var catalogViewModel = CatalogFlowViewModel()
+    
+    @State private var destPoint: RoutePoint = RoutePoint(lon: 0, lat: 0, type: RoutePoint.PointType.stop)
+    @State private var destinationPlaceText: String = ""
+    
     @State private var lonText: String = "37.625325"
     @State private var latText: String = "55.695281"
 
@@ -27,34 +31,7 @@ struct ContentView: View {
         ScrollView {
             VStack(spacing: 24) {
             // Выбор сцены
-            ScenePickerView(appModel: appModel)
-
-            // Контроль дистанции до стрелки
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Дистанция до стрелки: \(String(format: "%.1f", appModel.arrowDistance)) м")
-                    .font(.subheadline)
-
-                HStack(spacing: 12) {
-                    Button {
-                        appModel.setArrowDistance(appModel.arrowDistance - 0.5)
-                    } label: {
-                        Label("Ближе", systemImage: "minus.circle")
-                    }
-
-                    Button {
-                        appModel.setArrowDistance(appModel.arrowDistance + 0.5)
-                    } label: {
-                        Label("Дальше", systemImage: "plus.circle")
-                    }
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(.vertical, 8)
-
-            // Превью сцены (стрелка или куб)
-            ScenePreview(selection: appModel.selectedScene)
-
-            Divider()
+            // ScenePickerView(appModel: appModel)
 
             // Текущие GPS-координаты
             gpsBlock
@@ -62,7 +39,7 @@ struct ContentView: View {
             Divider()
 
             // Демонстрация Navigation API
-            NavigationDemoView(viewModel: navigationViewModel)
+                NavigationDemoView(viewModel: navigationViewModel, addrText: $destinationPlaceText, locationService: $locationService, destPoint: $destPoint)
 
             Divider()
 
@@ -74,6 +51,13 @@ struct ContentView: View {
         .onAppear {
             locationService.distanceThresholdMeters = 1.0
             locationService.start()
+            if appModel.selectedScene == .arrow && !appModel.hasOpenedArrowWindowOnce {
+                openWindow(id: "ArrowWindow1")
+                openWindow(id: "ArrowWindow2")
+                openWindow(id: "ArrowWindow3")
+                appModel.hasOpenedArrowWindowOnce = true
+            }
+//            Task { await updateImmersiveSpace(for: appModel.selectedScene) }
         }
         .onChange(of: locationService.currentLocation) { _, newLoc in
             guard let loc = newLoc else { return }
@@ -86,10 +70,16 @@ struct ContentView: View {
                 }
             }
         }
-        // ✅ Исправленный onChange без синтаксических ошибок
+        // ✅ Изменение сцены: открыть окна стрелок и синхронизировать Immersive
         .onChange(of: appModel.selectedScene) { _, newSelection in
             Task {
-                await updateImmersiveSpace(for: newSelection)
+                if newSelection == .arrow && !appModel.hasOpenedArrowWindowOnce {
+                    openWindow(id: "ArrowWindow1")
+                    openWindow(id: "ArrowWindow2")
+                    openWindow(id: "ArrowWindow3")
+                    appModel.hasOpenedArrowWindowOnce = true
+                }
+//                await updateImmersiveSpace(for: newSelection)
             }
         }
     }
@@ -128,24 +118,24 @@ struct ContentView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
-    @MainActor
-    private func updateImmersiveSpace(for selection: AppModel.SceneSelection) async {
-        // 🚫 Если сейчас меню — не пытаемся открывать Immersive
-        guard appModel.uiMode == .immersive else { return }
+    // @MainActor
+    // private func updateImmersiveSpace(for selection: AppModel.SceneSelection) async {
+    //     // 🚫 Если сейчас меню — не пытаемся открывать Immersive
+    //     guard appModel.uiMode == .immersive else { return }
 
-        switch appModel.immersiveSpaceState {
-        case .closed:
-            appModel.immersiveSpaceState = .inTransition
-            let result = await openImmersiveSpace(id: appModel.immersiveSpaceID)
-            switch result {
-            case .opened: break
-            case .userCancelled, .error: appModel.immersiveSpaceState = .closed
-            @unknown default: appModel.immersiveSpaceState = .closed
-            }
-        case .open, .inTransition:
-            break
-        }
-    }
+    //     switch appModel.immersiveSpaceState {
+    //     case .closed:
+    //         appModel.immersiveSpaceState = .inTransition
+    //         let result = await openImmersiveSpace(id: appModel.immersiveSpaceID)
+    //         switch result {
+    //         case .opened: break
+    //         case .userCancelled, .error: appModel.immersiveSpaceState = .closed
+    //         @unknown default: appModel.immersiveSpaceState = .closed
+    //         }
+    //     case .open, .inTransition:
+    //         break
+    //     }
+    // }
 }
 
 private struct ScenePickerView: View {
@@ -174,18 +164,11 @@ private struct ScenePreview: View {
         switch selection {
         case .arrow:
             VStack(alignment: .leading, spacing: 12) {
-                Label("Окно со стрелкой", systemImage: "rectangle.on.rectangle")
+                Label("Окна со стрелкой", systemImage: "rectangle.on.rectangle")
                     .font(.headline)
-                Text("Стрелка теперь в отдельном окне. Нажмите, чтобы открыть.")
+                Text("Три окна со стрелкой открываются автоматически. В иммерсивной сцене показаны три стрелки с шагом 1 м по глубине.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-
-                Button {
-                    openWindow(id: "ArrowWindow")
-                } label: {
-                    Label("Открыть окно стрелки", systemImage: "arrow.up.right.square")
-                }
-                .buttonStyle(.borderedProminent)
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -207,6 +190,9 @@ private struct ScenePreview: View {
 
 private struct NavigationDemoView: View {
     @Bindable var viewModel: NavigationViewModel
+    @Binding var addrText: String
+    @Binding var locationService: LocationService
+    @Binding var destPoint: RoutePoint
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -214,9 +200,14 @@ private struct NavigationDemoView: View {
                 .font(.title2)
                 .bold()
 
-            Text("Вызовы выполняются с использованием предоставленного API ключа")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            TextField("addr", text: $addrText)
+                .textFieldStyle(.roundedBorder)
+                .keyboardType(.numbersAndPunctuation)
+            
+            Button(action: savePointFromAddr) {
+                Label("Найти адрессс", systemImage: "house")
+            }
+            
 
             HStack {
                 Button(action: loadRoute) {
@@ -224,15 +215,15 @@ private struct NavigationDemoView: View {
                 }
                 .disabled(viewModel.isLoading)
 
-                Button(action: loadMapMatch) {
-                    Label("Map matching", systemImage: "map")
-                }
-                .disabled(viewModel.isLoading)
+                // Button(action: loadMapMatch) {
+                //     Label("Map matching", systemImage: "map")
+                // }
+                // .disabled(viewModel.isLoading)
 
-                Button(action: loadGeolocation) {
-                    Label("Radar геолокация", systemImage: "location.north.line")
-                }
-                .disabled(viewModel.isLoading)
+                // Button(action: loadGeolocation) {
+                //     Label("Radar геолокация", systemImage: "location.north.line")
+                // }
+                // .disabled(viewModel.isLoading)
             }
             .buttonStyle(.borderedProminent)
 
@@ -245,7 +236,7 @@ private struct NavigationDemoView: View {
                     .foregroundStyle(Color.red)
             }
 
-            if let route = viewModel.lastRouteResponse?.result.first {
+            if let route = viewModel.lastRouteResponse?.result?.first {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Маршрут: \(route.id ?? "неизвестно")")
                         .font(.headline)
@@ -268,46 +259,84 @@ private struct NavigationDemoView: View {
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
 
-            if let mapMatch = viewModel.lastMapMatchResponse {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Map matching")
-                        .font(.headline)
-                    if let distance = mapMatch.distance {
-                        Text(String(format: "Длина: %.0f м", distance))
-                    }
-                    if let duration = mapMatch.duration {
-                        Text(String(format: "Время: %.0f с", duration))
-                    }
-                    if let status = mapMatch.status {
-                        Text("Статус: \(status)")
-                            .font(.footnote)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            }
+            // if let mapMatch = viewModel.lastMapMatchResponse {
+            //     VStack(alignment: .leading, spacing: 8) {
+            //         Text("Map matching")
+            //             .font(.headline)
+            //         if let distance = mapMatch.distance {
+            //             Text(String(format: "Длина: %.0f м", distance))
+            //         }
+            //         if let duration = mapMatch.duration {
+            //             Text(String(format: "Время: %.0f с", duration))
+            //         }
+            //         if let status = mapMatch.status {
+            //             Text("Статус: \(status)")
+            //                 .font(.footnote)
+            //         }
+            //     }
+            //     .frame(maxWidth: .infinity, alignment: .leading)
+            //     .padding()
+            //     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            // }
 
-            if let location = viewModel.lastGeolocationResponse?.location {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Геолокация Radar")
-                        .font(.headline)
-                    if let latitude = location.latitude, let longitude = location.longitude {
-                        Text(String(format: "Lat: %.5f, Lon: %.5f", latitude, longitude))
-                    }
-                    if let accuracy = location.accuracy {
-                        Text(String(format: "Точность: %.0f м", accuracy))
-                    }
+            // if let location = viewModel.lastGeolocationResponse?.location {
+            //     VStack(alignment: .leading, spacing: 8) {
+            //         Text("Геолокация Radar")
+            //             .font(.headline)
+            //         if let latitude = location.latitude, let longitude = location.longitude {
+            //             Text(String(format: "Lat: %.5f, Lon: %.5f", latitude, longitude))
+            //         }
+            //         if let accuracy = location.accuracy {
+            //             Text(String(format: "Точность: %.0f м", accuracy))
+            //         }
+            //     }
+            //     .frame(maxWidth: .infinity, alignment: .leading)
+            //     .padding()
+            //     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            // }
+        }
+    }
+    
+    private func savePointFromAddr() {
+        Task { 
+            do {
+                let client = DGisPlacesClient(
+                    config: DGisPlacesClient.Config(apiKey: "6fe4cc7a-89b8-4aec-a5c3-ac94224044fe")
+                )
+
+                // bestMatch бросит ошибку, если ничего не найдено
+                let best = try await client.bestMatch(self.addrText)
+
+                // безопасно распакуем координаты
+                guard let p = best.point,
+                      let lon = p.lon,
+                      let lat = p.lat else {
+                    return
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+
+                // обновляем UI на главном потоке
+                await MainActor.run {
+                    self.addrText = best.addressName ?? best.name
+
+                    // ВАРИАНТ 1: если у тебя инициализатор помеченный:
+                    self.destPoint = RoutePoint(lon: best.point!.lon!, lat: best.point!.lat!, type:RoutePoint.PointType.stop)
+
+                    // ВАРИАНТ 2: если требуется ещё type:
+                    // self.destPoint = RoutePoint(lon: lon, lat: lat, type: .pref)
+
+                    // ВАРИАНТ 3: если у тебя позиционный init:
+                    // self.destPoint = RoutePoint(lon, lat)
+                }
+            } catch {
+                // обработай/залогуй ошибку
+                print("Search failed:", error)
             }
         }
     }
 
+
     private func loadRoute() {
-        Task { await viewModel.loadSampleRoute() }
+        Task { await viewModel.loadSampleRoute(locationService: locationService, destinationPoint:destPoint) }
     }
 
     private func loadMapMatch() {

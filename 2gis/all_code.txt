@@ -1,92 +1,7 @@
 
 ################################################################################
-FILE: AVPlayerView.swift
-SIZE: 481 bytes
-
-################################################################################
-//
-//  AVPlayerView.swift
-//  2gis
-//
-//  Created by Павел on 04.10.2025.
-//
-
-import SwiftUI
-
-struct AVPlayerView: UIViewControllerRepresentable {
-    let viewModel: AVPlayerViewModel
-
-    func makeUIViewController(context: Context) -> some UIViewController {
-        return viewModel.makePlayerViewController()
-    }
-
-    func updateUIViewController(_ uiViewController: UIViewControllerType, context: Context) {
-        // Update the AVPlayerViewController as needed
-    }
-}
-
-################################################################################
-FILE: AVPlayerViewModel.swift
-SIZE: 1557 bytes
-
-################################################################################
-//
-//  AVPlayerViewModel.swift
-//  2gis
-//
-//  Created by Павел on 04.10.2025.
-//
-
-import AVKit
-
-@MainActor
-@Observable
-class AVPlayerViewModel: NSObject {
-    var isPlaying: Bool = false
-    private var avPlayerViewController: AVPlayerViewController?
-    private var avPlayer = AVPlayer()
-    private let videoURL: URL? = {
-        // Return URL for the video to play. For example:
-        // Bundle.main.url(forResource: "MyVideo", withExtension: "mp4")
-        return nil
-    }()
-
-    func makePlayerViewController() -> AVPlayerViewController {
-        let avPlayerViewController = AVPlayerViewController()
-        avPlayerViewController.player = avPlayer
-        avPlayerViewController.delegate = self
-        self.avPlayerViewController = avPlayerViewController
-        return avPlayerViewController
-    }
-
-    func play() {
-        guard !isPlaying, let videoURL else { return }
-        isPlaying = true
-
-        let item = AVPlayerItem(url: videoURL)
-        avPlayer.replaceCurrentItem(with: item)
-        avPlayer.play()
-    }
-
-    func reset() {
-        guard isPlaying else { return }
-        isPlaying = false
-        avPlayer.replaceCurrentItem(with: nil)
-        avPlayerViewController?.delegate = nil
-    }
-}
-
-extension AVPlayerViewModel: AVPlayerViewControllerDelegate {
-    nonisolated func playerViewController(_ playerViewController: AVPlayerViewController, willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
-        Task { @MainActor in
-            reset()
-        }
-    }
-}
-
-################################################################################
 FILE: AppModel.swift
-SIZE: 736 bytes
+SIZE: 859 bytes
 
 ################################################################################
 //
@@ -104,6 +19,10 @@ import SwiftUI
 class AppModel {
     let immersiveSpaceID = "ImmersiveSpace"
     enum ImmersiveSpaceState { case closed, inTransition, open }
+
+    // 👇 новый флаг режима
+    enum UIMode { case immersive, menu }
+    var uiMode: UIMode = .immersive
 
     enum SceneSelection: String, CaseIterable, Equatable, Hashable {
         case arrow
@@ -180,21 +99,24 @@ private struct ArrowShape: Shape {
 
 ################################################################################
 FILE: ArrowWindow.swift
-SIZE: 545 bytes
+SIZE: 551 bytes
 
 ################################################################################
 import SwiftUI
 
 struct ArrowWindow: View {
+    let index: Int
+
     var body: some View {
         ArrowView()
             .padding(16)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-            .navigationTitle("Стрелка")
+            .navigationTitle("Стрелка #\(index)")
             .toolbar {
-                // опционально — небольшая подсказка
                 ToolbarItem(placement: .status) {
-                    Text("Окно со стрелкой").font(.footnote).foregroundStyle(.secondary)
+                    Text("Окно со стрелкой #\(index)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
     }
@@ -461,7 +383,7 @@ class CatalogFlowViewModel {
 
 ################################################################################
 FILE: ContentView.swift
-SIZE: 16084 bytes
+SIZE: 16643 bytes
 
 ################################################################################
 //
@@ -540,6 +462,13 @@ struct ContentView: View {
         .onAppear {
             locationService.distanceThresholdMeters = 1.0
             locationService.start()
+            if appModel.selectedScene == .arrow && !appModel.hasOpenedArrowWindowOnce {
+                openWindow(id: "ArrowWindow1")
+                openWindow(id: "ArrowWindow2")
+                openWindow(id: "ArrowWindow3")
+                appModel.hasOpenedArrowWindowOnce = true
+            }
+            Task { await updateImmersiveSpace(for: appModel.selectedScene) }
         }
         .onChange(of: locationService.currentLocation) { _, newLoc in
             guard let loc = newLoc else { return }
@@ -552,9 +481,15 @@ struct ContentView: View {
                 }
             }
         }
-        // ✅ Исправленный onChange без синтаксических ошибок
+        // ✅ Изменение сцены: открыть окна стрелок и синхронизировать Immersive
         .onChange(of: appModel.selectedScene) { _, newSelection in
             Task {
+                if newSelection == .arrow && !appModel.hasOpenedArrowWindowOnce {
+                    openWindow(id: "ArrowWindow1")
+                    openWindow(id: "ArrowWindow2")
+                    openWindow(id: "ArrowWindow3")
+                    appModel.hasOpenedArrowWindowOnce = true
+                }
                 await updateImmersiveSpace(for: newSelection)
             }
         }
@@ -596,19 +531,19 @@ struct ContentView: View {
 
     @MainActor
     private func updateImmersiveSpace(for selection: AppModel.SceneSelection) async {
+        // 🚫 Если сейчас меню — не пытаемся открывать Immersive
+        guard appModel.uiMode == .immersive else { return }
+
         switch appModel.immersiveSpaceState {
         case .closed:
             appModel.immersiveSpaceState = .inTransition
             let result = await openImmersiveSpace(id: appModel.immersiveSpaceID)
             switch result {
             case .opened: break
-            case .userCancelled, .error:
-                appModel.immersiveSpaceState = .closed
-            @unknown default:
-                appModel.immersiveSpaceState = .closed
+            case .userCancelled, .error: appModel.immersiveSpaceState = .closed
+            @unknown default: appModel.immersiveSpaceState = .closed
             }
         case .open, .inTransition:
-            // Ничего: контент обновится внутри ImmersiveView при смене selectedScene
             break
         }
     }
@@ -640,18 +575,11 @@ private struct ScenePreview: View {
         switch selection {
         case .arrow:
             VStack(alignment: .leading, spacing: 12) {
-                Label("Окно со стрелкой", systemImage: "rectangle.on.rectangle")
+                Label("Окна со стрелкой", systemImage: "rectangle.on.rectangle")
                     .font(.headline)
-                Text("Стрелка теперь в отдельном окне. Нажмите, чтобы открыть.")
+                Text("Три окна со стрелкой открываются автоматически. В иммерсивной сцене показаны три стрелки с шагом 1 м по глубине.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-
-                Button {
-                    openWindow(id: "ArrowWindow")
-                } label: {
-                    Label("Открыть окно стрелки", systemImage: "arrow.up.right.square")
-                }
-                .buttonStyle(.borderedProminent)
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -870,7 +798,7 @@ private struct CatalogFlowSection: View {
 
 ################################################################################
 FILE: ImmersiveView.swift
-SIZE: 3657 bytes
+SIZE: 4587 bytes
 
 ################################################################################
 //
@@ -892,22 +820,31 @@ struct ImmersiveView: View {
             let headAnchor = AnchorEntity(.head)
             headAnchor.name = "HeadAnchor"
 
-            // Плоская плашка-стрелка, смотрит на пользователя
+            // Плоская плашка-стрелка, смотрит на пользователя (три экземпляра с шагом 1 м)
             let arrowSize: SIMD2<Float> = [0.40, 0.18]
             let mesh = MeshResource.generatePlane(width: arrowSize.x, height: arrowSize.y, cornerRadius: 0.03)
 
-            var mat = UnlitMaterial()
-            mat.color = .init(tint: .init(red: 0.0, green: 0.7, blue: 1.0, alpha: 1.0))
+            func makeArrow(name: String, color: UIColor) -> ModelEntity {
+                var mat = UnlitMaterial()
+                mat.color = .init(tint: color)
+                let e = ModelEntity(mesh: mesh, materials: [mat])
+                e.name = name
+                e.components.set(BillboardComponent())
+                return e
+            }
 
-            let arrow = ModelEntity(mesh: mesh, materials: [mat])
-            arrow.name = "ArrowBillboard"
-            arrow.components.set(BillboardComponent())
+            let arrow1 = makeArrow(name: "ArrowBillboard1", color: .init(red: 0.0, green: 0.7, blue: 1.0, alpha: 1.0))
+            let arrow2 = makeArrow(name: "ArrowBillboard2", color: .init(red: 0.1, green: 0.9, blue: 0.6, alpha: 1.0))
+            let arrow3 = makeArrow(name: "ArrowBillboard3", color: .init(red: 1.0, green: 0.5, blue: 0.2, alpha: 1.0))
 
-            // начальная позиция вперёд по -Z (клэмп 1…5 м)
             let d0 = max(1.0 as Float, min(5.0 as Float, appModel.arrowDistance))
-            arrow.position = [0, 0, -d0]
+            arrow1.position = [0.0, 0.0, -d0]
+            arrow2.position = [0.0, 0.0, -(d0 + 1.0)]
+            arrow3.position = [0.0, 0.0, -(d0 + 2.0)]
 
-            headAnchor.addChild(arrow)
+            headAnchor.addChild(arrow1)
+            headAnchor.addChild(arrow2)
+            headAnchor.addChild(arrow3)
             headAnchor.isEnabled = (appModel.selectedScene == .arrow)
             content.add(headAnchor)
 
@@ -940,10 +877,16 @@ struct ImmersiveView: View {
             content.add(worldAnchor)
 
         } update: { content in
-            // Обновляем дистанцию стрелки (всегда 1…5 м)
-            if let arrow = content.entities.first(where: { $0.name == "ArrowBillboard" }) as? ModelEntity {
-                let d = max(1.0 as Float, min(5.0 as Float, appModel.arrowDistance))
-                arrow.position = [0, 0, -d]
+            // Обновляем дистанцию стрелок (всегда 1…5 м), с интервалом 1 м
+            let d = max(1.0 as Float, min(5.0 as Float, appModel.arrowDistance))
+            if let a1 = content.entities.first(where: { $0.name == "ArrowBillboard1" }) as? ModelEntity {
+                a1.position = [0, 0, -d]
+            }
+            if let a2 = content.entities.first(where: { $0.name == "ArrowBillboard2" }) as? ModelEntity {
+                a2.position = [0, 0, -(d + 1.0)]
+            }
+            if let a3 = content.entities.first(where: { $0.name == "ArrowBillboard3" }) as? ModelEntity {
+                a3.position = [0, 0, -(d + 2.0)]
             }
             // Переключаем сцены без пересоздания
             if let headAnchor = content.entities.first(where: { $0.name == "HeadAnchor" }) {
@@ -957,7 +900,6 @@ struct ImmersiveView: View {
         .onDisappear { appModel.immersiveSpaceState = .closed }
     }
 }
-
 
 
 ################################################################################
@@ -1523,41 +1465,66 @@ struct ToggleImmersiveSpaceButton: View {
 
 ################################################################################
 FILE: _gisApp.swift
-SIZE: 1076 bytes
+SIZE: 2082 bytes
 
 ################################################################################
+// _gisApp.swift
 import SwiftUI
 
 @main
 struct _gisApp: App {
-    
     @State private var appModel = AppModel()
-    @State private var avPlayerViewModel = AVPlayerViewModel()
-    
+
+    // Управляемый стиль иммерсии
+    @State private var immersionStyle: ImmersionStyle = .mixed
+
     var body: some Scene {
-        // Главное «информационное» окно (как было)
+        // Главное окно
         WindowGroup {
-            if avPlayerViewModel.isPlaying {
-                AVPlayerView(viewModel: avPlayerViewModel)
-            } else {
-                ContentView()
-                    .environment(appModel)
-            }
+            ContentView()
+                .environment(appModel)
         }
         .defaultSize(CGSize(width: 900, height: 800))
 
-        // Новое окно со стрелкой
-        WindowGroup(id: "ArrowWindow") {
-            ArrowWindow()
+        // Окна со стрелкой (три отдельных экземпляра)
+        WindowGroup(id: "ArrowWindow1") {
+            ArrowWindow(index: 1)
                 .environment(appModel)
         }
         .defaultSize(CGSize(width: 640, height: 320))
 
-        // Иммерсивная сцена (без изменений)
+        WindowGroup(id: "ArrowWindow2") {
+            ArrowWindow(index: 2)
+                .environment(appModel)
+        }
+        .defaultSize(CGSize(width: 640, height: 320))
+
+        WindowGroup(id: "ArrowWindow3") {
+            ArrowWindow(index: 3)
+                .environment(appModel)
+        }
+        .defaultSize(CGSize(width: 640, height: 320))
+
+        // Иммерсивная сцена
         ImmersiveSpace(id: appModel.immersiveSpaceID) {
             ImmersiveView()
                 .environment(appModel)
+                // ✅ Здесь .onAppear работает, потому что это View
+                .onAppear {
+                    immersionStyle = (appModel.selectedScene == .arrow) ? .mixed : .full
+                }
+                // ✅ Здесь тоже можно следить за изменением сцены
+                .onChange(of: appModel.selectedScene) { _, newValue in
+                    switch newValue {
+                    case .arrow:
+                        immersionStyle = .mixed
+                    case .cube:
+                        immersionStyle = .full
+                    }
+                }
         }
-        .immersionStyle(selection: .constant(.full), in: .full)
+        // ✅ Модификатор применяется к ImmersiveSpace (Scene) корректно
+        .immersionStyle(selection: $immersionStyle, in: .mixed, .full)
     }
 }
+

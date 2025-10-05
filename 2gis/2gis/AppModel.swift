@@ -26,6 +26,9 @@ class AppModel {
     var immersiveSpaceState = ImmersiveSpaceState.closed
     var selectedScene: SceneSelection = .arrow
 
+    // ✅ Добавь этот флаг — используется в ContentView для одноразового открытия окон
+    var hasOpenedArrowWindowOnce: Bool = false
+
     // Дистанция для стрелки (м) с жёстким клэмпом 1...5
     private(set) var arrowDistance: Float = 1.5
     func setArrowDistance(_ meters: Float) {

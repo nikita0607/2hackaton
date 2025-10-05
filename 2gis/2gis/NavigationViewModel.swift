@@ -16,15 +16,21 @@ class NavigationViewModel {
         self.client = client
     }
 
-    func loadSampleRoute() async {
+    func loadSampleRoute(locationService: LocationService, destinationPoint: RoutePoint) async {
         await execute {
+            let currentLocation = locationService.currentLocation;
+            
+            
+            if (currentLocation == nil) {
+                debugPrint("Use mock instead")
+            }
+            
             let request = RouteRequest(
                 points: [
-                    RoutePoint(lon: 37.582591, lat: 55.775364, type: .stop),
-                    RoutePoint(lon: 37.656625, lat: 55.765036, type: .stop)
+                    RoutePoint(lon: currentLocation?.coordinate.longitude ?? 104.798401, lat: currentLocation?.coordinate.latitude ?? 51.877124, type: .stop),
+                    destinationPoint
                 ],
-                transport: "driving",
-                filters: ["dirt_road", "toll_road", "ferry"],
+                transport: "walking",
                 output: .detailed,
                 locale: "ru"
             )
