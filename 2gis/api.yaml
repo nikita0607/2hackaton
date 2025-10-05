@@ -1,0 +1,744 @@
+openapi: 3.0.3
+info:
+  title: 2GIS Navigation, Places & 3D Models API
+  version: 1.1.0
+  description: |
+    Сводная спецификация ключевых HTTP-сервисов 2GIS для маршрутизации, map-matching,
+    определения геопозиции, поиска зданий/организаций и доступа к 3D-моделям (digital twin).
+
+servers:
+  - url: https://routing.api.2gis.com
+    description: "Routing & Map Matching API"
+  - url: https://radar.api.2gis.com
+    description: "Radar API"
+  - url: https://catalog.api.2gis.com
+    description: "Places API (поиск организаций/мест)"
+  - url: https://catalog.api.2gis.com/3.0
+    description: "Places API v3 (база /3.0)"
+  - url: https://disk.2gis.com/digital-twin/models_s3
+    description: "Хранилище 3D-моделей (digital twin)"
+
+paths:
+  # ---------- Catalog v3: Geocoder (uses /3.0 base) ----------
+  /items/geocode:
+    servers:
+      - url: https://catalog.api.2gis.com/3.0
+    get:
+      summary: Поиск зданий по координатам
+      description: |
+        Возвращает список зданий в заданном радиусе от точки. Рекомендуется указывать параметр `radius`
+        не менее 300 м, чтобы избежать пропуска объектов.
+      parameters:
+        - in: query
+          name: lon
+          required: true
+          schema: { type: number }
+          description: Долгота точки (в градусах).
+        - in: query
+          name: lat
+          required: true
+          schema: { type: number }
+          description: Широта точки (в градусах).
+        - in: query
+          name: radius
+          required: false
+          schema:
+            type: integer
+            minimum: 10
+          description: Радиус поиска в метрах.
+        - in: query
+          name: type
+          required: true
+          schema:
+            type: string
+            enum: [building]
+          description: Тип объектов (для домов — `building`).
+        - in: query
+          name: key
+          required: true
+          schema: { type: string }
+          description: API-ключ.
+      responses:
+        '200':
+          description: Список найденных зданий
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeocodeResponse'
+
+  # ---------- Catalog v3: Building details (uses /3.0 base) ----------
+  /items/byid:
+    servers:
+      - url: https://catalog.api.2gis.com/3.0
+    get:
+      summary: Получение подробной информации о здании
+      description: |
+        Возвращает сведения о здании по его идентификатору. Можно указать дополнительные поля через `fields`.
+        Допустимые поля включают материал, количество квартир/подъездов, тип перекрытий, год постройки и др..
+      parameters:
+        - in: query
+          name: id
+          required: true
+          schema: { type: string }
+          description: Идентификатор объекта (здания).
+        - in: query
+          name: fields
+          required: false
+          schema: { type: string }
+          description: |
+            Список дополнительных полей, разделённых запятой. Примеры: `items.address`, `items.floors`,
+            `items.structure_info.material`, `items.structure_info.apartments_count`,
+            `items.structure_info.porch_count`, `items.structure_info.floor_type`,
+            `items.structure_info.year_of_construction`, `items.structure_info.elevators_count`,
+            `items.structure_info.gas_type`, `items.structure_info.project_type`,
+            `items.structure_info.chs_name`, `items.structure_info.chs_category`.
+        - in: query
+          name: key
+          required: true
+          schema: { type: string }
+          description: API-ключ.
+      responses:
+        '200':
+          description: Подробная информация о здании
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildingDetailsResponse'
+
+  # ---------- Catalog v3 demo: 3D models list (logical service) ----------
+  /models:
+    servers:
+      - url: https://catalog.api.2gis.com/3.0
+    get:
+      summary: Получение списка доступных 3D-моделей
+      description: |
+        Возвращает список доступных цифровых двойников (digital twin) для зданий. Демонстрационный энд-поинт:
+        в реальности 3D-модели отдаются по ссылкам вида `https://disk.2gis.com/digital-twin/models_s3/...`
+        и доступны только для некоторых объектов.
+      parameters:
+        - in: query
+          name: building_id
+          required: false
+          schema: { type: string }
+          description: Идентификатор здания, чтобы получить 3D-модель именно для этого здания.
+      responses:
+        '200':
+          description: Список моделей
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Model'
+
+  /models/{modelId}:
+    servers:
+      - url: https://catalog.api.2gis.com/3.0
+    get:
+      summary: Получение 3D-модели по идентификатору
+      description: |
+        Возвращает описание и URL 3D-модели здания. Модель — glTF/GLB, поддерживается MapGL API.
+        Сама модель загружается по указанной ссылке.
+      parameters:
+        - in: path
+          name: modelId
+          required: true
+          schema: { type: string }
+          description: Идентификатор 3D-модели (например, совпадает с id здания).
+      responses:
+        '200':
+          description: Данные о 3D-модели
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelDetail'
+
+  # ---------- Routing ----------
+  /routing/7.0.0/global:
+    post:
+      summary: "Build a route between points"
+      description: |
+        Calculates a route for a specified transport type (driving, walking, bicycle, etc.)
+        through a list of waypoints. Requires query param `key`.
+      operationId: buildRoute
+      parameters:
+        - name: key
+          in: query
+          required: true
+          description: "API access key"
+          schema: { type: string }
+      requestBody:
+        required: true
+        description: "Route calculation parameters"
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                points:
+                  type: array
+                  minItems: 2
+                  description: "Ordered list of points (lon, lat, type). For transport up to 10 points, for walking up to 5."
+                  items: { $ref: '#/components/schemas/RoutePoint' }
+                transport:
+                  type: string
+                  description: "Transport mode. One of: driving, taxi, bicycle, scooter, motorcycle, truck, walking."
+                  example: driving
+                filters:
+                  type: array
+                  description: "Exclude certain road types (e.g., dirt_road, toll_road, ferry)."
+                  items: { type: string }
+                output:
+                  type: string
+                  description: "summary (distance/time) or detailed (with geometry and maneuvers)"
+                  enum: [summary, detailed]
+                  default: detailed
+                locale:
+                  type: string
+                  description: "Language code for textual descriptions of maneuvers (e.g., en, ru)."
+                  default: en
+                avoid:
+                  type: array
+                  description: "Optional list of area identifiers / road types to avoid"
+                  items: { type: string }
+              required: [points]
+      responses:
+        "200":
+          description: "Route calculation succeeded"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, nullable: true, description: "Optional message or null" }
+                  query: { type: object, description: "Echo of the request parameters" }
+                  result:
+                    type: array
+                    items: { $ref: '#/components/schemas/RouteResult' }
+        "400": { description: "Invalid request parameters" }
+        "401": { description: "Authentication error" }
+        "500": { description: "Internal server error" }
+
+  # ---------- Map Matching ----------
+  /map_matching/1.0.0:
+    post:
+      summary: "Reconstruct a recorded route from GPS points"
+      description: |
+        Map matching of recorded positions to the road network. Requires `key` in query.
+      operationId: mapMatch
+      parameters:
+        - name: key
+          in: query
+          required: true
+          description: "API access key"
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: array
+                  description: "Recorded points with lon, lat, utc; optional speed, azimuth"
+                  minItems: 2
+                  maxItems: 1000
+                  items: { $ref: '#/components/schemas/RecordedPoint' }
+              required: [query]
+      responses:
+        "200":
+          description: "Route reconstructed successfully"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  distance: { type: number, format: double }
+                  duration: { type: number, format: double }
+                  edges:
+                    type: array
+                    items: { $ref: '#/components/schemas/MatchedEdge' }
+                  query:
+                    type: array
+                    items: { $ref: '#/components/schemas/MatchedQueryPoint' }
+                  route: { type: string, description: "WKT LINESTRING" }
+                  status: { type: string }
+        "400": { description: "Invalid request" }
+        "401": { description: "Authentication error" }
+        "500": { description: "Server error" }
+
+  # ---------- Radar (Geolocation) ----------
+  /v2/geolocation:
+    post:
+      summary: "Determine device geolocation via Radar API"
+      description: |
+        Estimates device position using Wi-Fi APs, cell towers and optional GNSS data.
+      operationId: getGeolocation
+      servers:
+        - url: https://radar.api.2gis.com
+      parameters:
+        - name: key
+          in: query
+          required: true
+          description: "API access key"
+          schema: { type: string }
+      requestBody:
+        required: true
+        description: "Observed radio environment and optional GNSS data"
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessionUUID: { type: string, format: uuid }
+                captureTimestampUnix: { type: integer }
+                gnssLocation: { $ref: '#/components/schemas/GnssLocation' }
+                mobileNetwork: { $ref: '#/components/schemas/MobileNetwork' }
+                wifiAccessPoints:
+                  type: array
+                  items: { $ref: '#/components/schemas/WifiAccessPoint' }
+              required: [sessionUUID, captureTimestampUnix]
+      responses:
+        "200":
+          description: "Geolocation estimated successfully"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  statusCode: { type: integer }
+                  state: { type: string }
+                  location:
+                    type: object
+                    properties:
+                      longitude: { type: number, format: double }
+                      latitude: { type: number, format: double }
+                      accuracy: { type: number, format: double, description: "Accuracy radius (m)" }
+        "400": { description: "Bad request" }
+        "401": { description: "Authentication error" }
+        "500": { description: "Internal server error" }
+
+  # ---------- Catalog v3 legacy-style search (kept) ----------
+  /3.0/items:
+    get:
+      summary: "Search for places (organizations, buildings, POI)"
+      description: |
+        Returns organizations/places by criteria.
+        To list organizations inside a specific building, pass `search_type=indoor` together with `building_id`.
+      operationId: searchPlaces
+      servers:
+        - url: https://catalog.api.2gis.com
+      parameters:
+        - name: key
+          in: query
+          required: true
+          description: "API access key"
+          schema: { type: string }
+        - name: q
+          in: query
+          required: false
+          description: "Optional text query"
+          schema: { type: string }
+        - name: building_id
+          in: query
+          required: false
+          description: "Building ID to limit search to organizations inside this building"
+          schema: { type: string }
+        - name: search_type
+          in: query
+          required: false
+          description: "Use `indoor` to search inside a building (requires `building_id`)"
+          schema:
+            type: string
+            enum: [indoor]
+        - name: fields
+          in: query
+          required: false
+          description: |
+            Comma-separated list of extra fields to include, e.g.:
+            `items.contact_groups,items.working_hours,items.point,items.rubrics,items.links`
+          schema: { type: string }
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        "200":
+          description: "Places found"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    type: object
+                    properties:
+                      code: { type: integer, example: 200 }
+                      total: { type: integer, example: 8 }
+                      page: { type: integer, example: 1 }
+                      page_size: { type: integer, example: 12 }
+                  result:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/PlaceItem' }
+        "400": { description: "Invalid request" }
+        "401": { description: "Authentication error" }
+        "403": { description: "Forbidden" }
+        "404": { description: "Not found" }
+        "408": { description: "Request timeout" }
+        "500": { description: "Server error" }
+
+  /3.0/items/byservicing:
+    get:
+      summary: "List servicing organizations for a building"
+      description: |
+        Returns organizations that service a given building (e.g., utilities/ISP groups).
+      operationId: listServicingOrganizations
+      servers:
+        - url: https://catalog.api.2gis.com
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema: { type: string }
+        - name: building_id
+          in: query
+          required: true
+          description: "Building ID"
+          schema: { type: string }
+        - name: servicing_group
+          in: query
+          required: true
+          description: "Servicing group key (e.g., default, internet)"
+          schema: { type: string }
+        - name: fields
+          in: query
+          required: false
+          description: "Extra fields to include (e.g., items.contact_groups,items.working_hours,items.links)"
+          schema: { type: string }
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        "200":
+          description: "Servicing organizations found"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    type: object
+                    properties:
+                      code: { type: integer, example: 200 }
+                      total: { type: integer, example: 3 }
+                  result:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/PlaceItem' }
+        "400": { description: "Invalid request" }
+        "401": { description: "Authentication error" }
+        "403": { description: "Forbidden" }
+        "404": { description: "Not found" }
+        "500": { description: "Server error" }
+
+components:
+  schemas:
+    # ---- Geocoder & Building details (from 2nd file) ----
+    GeocodeItem:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        full_name: { type: string }
+        type: { type: string }
+      required: [id, name, type]
+
+    GeocodeResponse:
+      type: object
+      properties:
+        meta:
+          $ref: '#/components/schemas/Meta'
+        result:
+          type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/GeocodeItem' }
+            total:
+              type: integer
+
+    BuildingDetails:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        address_name: { type: string }
+        type: { type: string }
+        floors: { type: integer }
+        point:
+          type: object
+          properties:
+            lon: { type: number }
+            lat: { type: number }
+        structure_info:
+          type: object
+          description: Дополнительная информация о конструкции и характеристиках здания.
+          properties:
+            material: { type: string }
+            apartments_count: { type: integer }
+            porch_count: { type: integer }
+            floor_type: { type: string }
+            gas_type: { type: string }
+            year_of_construction: { type: integer }
+            elevators_count: { type: integer }
+            is_in_emergency_state: { type: boolean }
+            project_type: { type: string }
+            chs_name: { type: string }
+            chs_category: { type: string }
+      required: [id, name, type]
+
+    BuildingDetailsResponse:
+      type: object
+      properties:
+        meta:
+          $ref: '#/components/schemas/Meta'
+        result:
+          type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/BuildingDetails' }
+            total:
+              type: integer
+
+    Meta:
+      type: object
+      properties:
+        api_version: { type: string }
+        code: { type: integer }
+        issue_date:
+          type: string
+          format: date
+      required: [api_version, code, issue_date]
+
+    Model:
+      type: object
+      properties:
+        id: { type: string }
+        building_id: { type: string }
+        url: { type: string }
+        description: { type: string }
+      required: [id, url]
+
+    ModelDetail:
+      type: object
+      properties:
+        id: { type: string }
+        building_id: { type: string }
+        url: { type: string }
+        format:
+          type: string
+          description: Формат модели (обычно glTF/GLB).
+        scale:
+          type: array
+          items: { type: number }
+          description: Начальный масштаб модели, как в примере GeoJSON.
+        rotation:
+          type: array
+          items: { type: number }
+          description: Параметры вращения.
+        translate:
+          type: array
+          items: { type: number }
+          description: Смещение модели в метрах.
+        preview_image:
+          type: string
+          description: Ссылка на изображение превью модели (при наличии).
+      required: [id, url, format]
+
+    # ---- Routing / Map matching (from 1st file) ----
+    RoutePoint:
+      type: object
+      properties:
+        lon: { type: number, format: double }
+        lat: { type: number, format: double }
+        type:
+          type: string
+          description: "Point type (walking, stop, or pref)"
+          enum: [walking, stop, pref]
+        start: { type: boolean }
+      required: [lon, lat, type]
+
+    RouteResult:
+      type: object
+      properties:
+        id: { type: string }
+        algorithm: { type: string }
+        begin_pedestrian_path: { type: object, nullable: true }
+        end_pedestrian_path: { type: object, nullable: true }
+        maneuvers:
+          type: array
+          items: { $ref: '#/components/schemas/Maneuver' }
+        filter_road_types:
+          type: array
+          items: { type: string }
+
+    Maneuver:
+      type: object
+      properties:
+        id: { type: string }
+        comment: { type: string }
+        icon: { type: string }
+        outcoming_path:
+          type: object
+          properties:
+            distance: { type: number, format: double }
+            duration: { type: number, format: double }
+            geometry:
+              type: array
+              items: { $ref: '#/components/schemas/SegmentGeometry' }
+        outcoming_path_comment: { type: string }
+
+    SegmentGeometry:
+      type: object
+      properties:
+        color: { type: string }
+        length: { type: number, format: double }
+        selection: { type: string, description: "WKT LINESTRING" }
+        style: { type: string }
+
+    RecordedPoint:
+      type: object
+      properties:
+        lon: { type: number, format: double }
+        lat: { type: number, format: double }
+        utc: { type: integer }
+        speed: { type: number, format: double, nullable: true }
+        azimuth: { type: number, format: double, nullable: true }
+      required: [lon, lat, utc]
+
+    MatchedEdge:
+      type: object
+      properties:
+        edge_id: { type: integer }
+        distance: { type: number, format: double }
+        geometry: { type: string }
+
+    MatchedQueryPoint:
+      type: object
+      properties:
+        lon: { type: number, format: double }
+        lat: { type: number, format: double }
+        lon_matched: { type: number, format: double }
+        lat_matched: { type: number, format: double }
+        edge_id: { type: integer }
+        utc: { type: integer }
+        speed: { type: number, format: double, nullable: true }
+        azimuth: { type: number, format: double, nullable: true }
+
+    GnssLocation:
+      type: object
+      properties:
+        latitude: { type: number, format: double }
+        longitude: { type: number, format: double }
+        horizontalAccuracyM: { type: number, format: double }
+
+    MobileNetwork:
+      type: object
+      properties:
+        homeMobileCountryCode: { type: integer }
+        homeMobileNetworkCode: { type: integer }
+        cellTowers:
+          type: array
+          items: { $ref: '#/components/schemas/CellTower' }
+
+    CellTower:
+      type: object
+      properties:
+        cellID: { type: integer }
+        networkType: { type: string }
+        locationAreaCode: { type: integer }
+        signalStrengthDBm: { type: integer }
+        ageMs: { type: integer }
+
+    WifiAccessPoint:
+      type: object
+      properties:
+        macAddress: { type: string }
+        signalStrengthDBm: { type: integer }
+        ageMs: { type: integer }
+
+    # ---- Places search entities (from 1st file) ----
+    PlaceItem:
+      type: object
+      description: "Place/organization entity returned by Places API"
+      properties:
+        id: { type: string, example: "70000001035117352" }
+        name: { type: string, example: "Coffee Like" }
+        address_name: { type: string, example: "ул. Ленина, 15" }
+        point:
+          type: object
+          properties:
+            lon: { type: number, format: double }
+            lat: { type: number, format: double }
+        rubrics:
+          type: array
+          description: "Business categories"
+          items:
+            type: object
+            properties:
+              name: { type: string }
+        contact_groups:
+          type: array
+          items: { $ref: '#/components/schemas/ContactGroup' }
+        working_hours:
+          $ref: '#/components/schemas/WorkingHours'
+        links:
+          type: object
+          description: "Related links (e.g., entrances, floor plans, website)"
+          additionalProperties: true
+        rating: { type: number, nullable: true }
+        reviews_count: { type: integer, nullable: true }
+
+    ContactGroup:
+      type: object
+      properties:
+        name: { type: string, example: "Основной" }
+        contacts:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string, example: "phone" }
+              value: { type: string, example: "+7 (800) 555-35-35" }
+
+    WorkingHours:
+      type: object
+      properties:
+        text: { type: string, example: "Пн–Пт 09:00–20:00" }
+        schedule:
+          type: array
+          items:
+            type: object
+            properties:
+              days: { type: string, example: "Mon-Fri" }
+              open: { type: string, example: "09:00" }
+              close: { type: string, example: "20:00" }

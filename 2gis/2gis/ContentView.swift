@@ -14,6 +14,9 @@ struct ContentView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @State private var navigationViewModel = NavigationViewModel()
+    @State private var catalogViewModel = CatalogFlowViewModel()
+    @State private var lonText: String = "37.625325"
+    @State private var latText: String = "55.695281"
 
     var body: some View {
         ScrollView {
@@ -24,6 +27,10 @@ struct ContentView: View {
                 Divider()
 
                 NavigationDemoView(viewModel: navigationViewModel)
+
+                Divider()
+
+                CatalogFlowSection(viewModel: catalogViewModel, lonText: $lonText, latText: $latText)
             }
             .padding(24)
         }
@@ -212,6 +219,84 @@ private struct NavigationDemoView: View {
 
     private func loadGeolocation() {
         Task { await viewModel.loadSampleGeolocation() }
+    }
+}
+
+private struct CatalogFlowSection: View {
+    @Bindable var viewModel: CatalogFlowViewModel
+    @Binding var lonText: String
+    @Binding var latText: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Здание и организации по координате")
+                .font(.title3)
+                .bold()
+
+            HStack(spacing: 12) {
+                TextField("lon", text: $lonText)
+                    .textFieldStyle(.roundedBorder)
+                    .keyboardType(.numbersAndPunctuation)
+                TextField("lat", text: $latText)
+                    .textFieldStyle(.roundedBorder)
+                    .keyboardType(.numbersAndPunctuation)
+                Button {
+                    Task {
+                        if let lon = Double(lonText), let lat = Double(latText) {
+                            await viewModel.run(lon: lon, lat: lat)
+                        }
+                    }
+                } label: {
+                    Label("Найти", systemImage: "building.2")
+                }
+                .disabled(viewModel.isRunning)
+            }
+
+            if viewModel.isRunning { ProgressView() }
+
+            if let result = viewModel.lastResult {
+                if let b = result.building {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(b.name).font(.headline)
+                        if let addr = b.addressName { Text(addr).font(.subheadline) }
+                        HStack(spacing: 8) {
+                            if let floors = b.floors { Text("Этажей: \(floors)") }
+                            if let material = b.structureInfo?.material { Text("Материал: \(material)") }
+                            if let year = b.structureInfo?.yearOfConstruction { Text("Год: \(year)") }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                } else {
+                    Text("Здание не найдено рядом с точкой").foregroundStyle(.secondary)
+                }
+
+                if !result.organizations.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Организации внутри")
+                            .font(.headline)
+                        ForEach(result.organizations, id: \.id) { org in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(org.name ?? "—").font(.subheadline).bold()
+                                if let addr = org.addressName { Text(addr).font(.footnote).foregroundStyle(.secondary) }
+                                if let rub = org.rubrics?.compactMap({ $0.name }).first { Text(rub).font(.footnote) }
+                            }
+                            .padding(8)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
+                } else {
+                    Text("Организации не найдены").foregroundStyle(.secondary)
+                }
+
+                if !result.diagnostics.isEmpty {
+                    Text(result.diagnostics.joined(separator: " · "))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }
 
