@@ -24,4 +24,6 @@ class AppModel {
     var userTurnHint: String = ""
     // чтобы не открывать дубликаты окон
     var openedBillboardNodeIDs: Set<UUID> = []
+    // Точное значение узла, с которым открывалось окно (для корректного dismiss)
+    var openedBillboardNodesByID: [UUID: ManeuverNode] = [:]
 }

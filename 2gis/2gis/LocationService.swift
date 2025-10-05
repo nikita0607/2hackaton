@@ -23,6 +23,9 @@ final class LocationService: NSObject {
     var mode: Mode = .real
     private var playbackTask: Task<Void, Never>?
     private var gpxWaypoints: [GPXWaypoint] = []
+    /// Коэффициент скорости воспроизведения мок-геопозиции.
+    /// 1.0 — как в GPX, 0.5 — в 2 раза медленнее, 2.0 — в 2 раза быстрее.
+    var playbackRate: Double = 0.2
 
     // Настройки
     var distanceThresholdMeters: CLLocationDistance = 1.0   // «каждый метр»
@@ -185,7 +188,9 @@ extension LocationService {
                 // Отсчитываем от минимального времени t0 (first может быть nil и даёт двойной optional)
                 let delay = max(0, targetTime - t0) - prevDelay
                 prevDelay += delay
-                if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+                let rate = max(0.01, self.playbackRate)
+                let effectiveDelay = delay / rate
+                if effectiveDelay > 0 { try? await Task.sleep(nanoseconds: UInt64(effectiveDelay * 1_000_000_000)) }
 
                 // Рассчитываем скорость и курс
                 var speed: CLLocationSpeed = 0
@@ -195,7 +200,8 @@ extension LocationService {
                 if let prev = prevLoc, let prevT = times[max(0, idx-1)], let curT = times[idx] {
                     let dt = max(0.1, curT - prevT)
                     let dist = nowLoc.distance(from: prev)
-                    speed = dist / dt
+                    // Масштабируем скорость в соответствии с playbackRate, чтобы соответствовать фактической скорости воспроизведения
+                    speed = (dist / dt) * self.playbackRate
                     course = bearing(from: prev.coordinate, to: nowCoord)
                 }
 

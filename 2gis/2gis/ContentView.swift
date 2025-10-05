@@ -109,64 +109,34 @@ struct ContentView: View {
                 )
                 appModel.userAlongMeters = along
 
-                // Подсказка поворота: сравним вектор движения пользователя и тангенс маршрута в точке проекции
-                if let prev = prevUser {
-                    if let origin = appModel.routeOriginLonLat {
-                        let hint = computeTurnHint(
-                            prev: prev,
-                            curr: (lon: loc.coordinate.longitude, lat: loc.coordinate.latitude),
-                            origin: origin,
-                            polyline: appModel.routePolyline,
-                            along: along
-                        )
-                        appModel.userTurnHint = hint
-                    }
-                } else {
-                    appModel.userTurnHint = ""
-                }
-
-                // Очистка устаревших билбордов (сильно позади пользователя)
-                let keepFrom = max(0.0, along - 5.0) // небольшой гистерезис 5 м
-                if let firstIdx = appModel.generatedBillboards.firstIndex(where: { $0.alongMeters >= keepFrom }) {
-                    if firstIdx > 0 { appModel.generatedBillboards.removeFirst(firstIdx) }
-                } else {
-                    appModel.generatedBillboards.removeAll()
-                }
-                // Закрыть окна, которые ссылаются на уже удалённые билборды
-                let existingIDs = Set(appModel.generatedBillboards.map { $0.id })
-                let orphanIDs = appModel.openedBillboardNodeIDs.subtracting(existingIDs)
-                for id in orphanIDs {
-                    let placeholder = ManeuverNode(id: id, lon: 0, lat: 0, title: "⬆︎", detail: nil)
-                    dismissWindow(id: "SignpostWindow", value: placeholder)
-                    appModel.openedBillboardNodeIDs.remove(id)
-                }
-
-                // Берём как минимум 3 ближайших впереди
+                // Берём только один ближайший впереди билборд
                 let upcoming = appModel.generatedBillboards.filter { $0.alongMeters + 0.1 >= along }
-                let desired = Array(upcoming.prefix(3))
-                let desiredIDs = Set(desired.map { $0.id })
+                let nextBillboard = upcoming.first
+                let desiredIDs: Set<UUID> = nextBillboard.map { Set([$0.id]) } ?? []
 
-                // Закрыть лишние окна
+                // Закрыть лишние окна (используем исходное значение узла, с которым открывали)
                 let toClose = appModel.openedBillboardNodeIDs.subtracting(desiredIDs)
                 for id in toClose {
-                    // найдём соответствующий борд
-                    if let b = appModel.generatedBillboards.first(where: { $0.id == id }) {
-                        let node = ManeuverNode(id: b.id, lon: b.lon, lat: b.lat, title: "⬆︎", detail: nil)
-                        dismissWindow(id: "SignpostWindow", value: node)
+                    if let openedNode = appModel.openedBillboardNodesByID[id] {
+                        dismissWindow(id: "SignpostWindow", value: openedNode)
+                        appModel.openedBillboardNodesByID.removeValue(forKey: id)
                     } else {
-                        // если уже нет в массиве — закроем по плейсхолдеру с тем же id
-                        let placeholder = ManeuverNode(id: id, lon: 0, lat: 0, title: "⬆︎", detail: nil)
-                        dismissWindow(id: "SignpostWindow", value: placeholder)
+                        // Фоллбэк: если не знаем точного значения, закроем все окна этой сцены
+                        dismissWindow(id: "SignpostWindow")
+                        appModel.openedBillboardNodesByID.removeAll()
+                        appModel.openedBillboardNodeIDs.removeAll()
+                        break
                     }
                     appModel.openedBillboardNodeIDs.remove(id)
                 }
 
-                // Открыть недостающие окна
-                for b in desired where !appModel.openedBillboardNodeIDs.contains(b.id) {
+                // Открыть недостающее окно (ровно одно)
+                if let b = nextBillboard, !appModel.openedBillboardNodeIDs.contains(b.id) {
                     let distanceLeft = max(0, Int((b.alongMeters - along).rounded()))
                     let node = ManeuverNode(id: b.id, lon: b.lon, lat: b.lat, title: "⬆︎", detail: distanceLeft > 0 ? "через \(distanceLeft) м" : nil)
                     openWindow(id: "SignpostWindow", value: node)
                     appModel.openedBillboardNodeIDs.insert(b.id)
+                    appModel.openedBillboardNodesByID[b.id] = node
                 }
             }
         }
@@ -181,11 +151,14 @@ struct ContentView: View {
             if !appModel.openedBillboardNodeIDs.isEmpty {
                 let prevIds = appModel.openedBillboardNodeIDs
                 for id in prevIds {
-                    if let b = appModel.generatedBillboards.first(where: { $0.id == id }) {
-                        let node = ManeuverNode(id: b.id, lon: b.lon, lat: b.lat, title: "⬆︎", detail: nil)
-                        dismissWindow(id: "SignpostWindow", value: node)
-                    } else if let n = appModel.maneuverNodes.first(where: { $0.id == id }) {
-                        dismissWindow(id: "SignpostWindow", value: n)
+                    if let openedNode = appModel.openedBillboardNodesByID[id] {
+                        dismissWindow(id: "SignpostWindow", value: openedNode)
+                        appModel.openedBillboardNodesByID.removeValue(forKey: id)
+                    } else {
+                        dismissWindow(id: "SignpostWindow")
+                        appModel.openedBillboardNodesByID.removeAll()
+                        appModel.openedBillboardNodeIDs.removeAll()
+                        break
                     }
                     appModel.openedBillboardNodeIDs.remove(id)
                 }
@@ -300,7 +273,7 @@ private struct NavigationDemoView: View {
 
             HStack {
                 Button(action: savePointFromAddr) {
-                    Label("Найти адрессс", systemImage: "house")
+                    Label("Найти адресс", systemImage: "house")
                 }
                 Button(action: loadRoute) {
                     Label("Построить маршрут", systemImage: "car")
